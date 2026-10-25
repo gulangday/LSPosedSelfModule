@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 白色开关胶囊 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M40,44 L68,44 A10,10 0 0 1 68,64 L40,64 A10,10 0 0 1 40,44 Z" />
+    <!-- 右侧紫色圆点，形成“已开启”的开关语义 -->
+    <path
+        android:fillColor="#6750A4"
+        android:pathData="M63,54 m-6.5,0 a6.5,6.5 0 1,0 13,0 a6.5,6.5 0 1,0 -13,0" />
+</vector>

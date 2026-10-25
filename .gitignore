@@ -17,6 +17,9 @@ local.properties
 # Build outputs kept for reference are not tracked
 /prebuilt/
 
+# Local verification screenshots
+/shots/
+
 # OS noise
 .DS_Store
 Thumbs.db

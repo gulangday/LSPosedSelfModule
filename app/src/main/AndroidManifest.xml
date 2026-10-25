@@ -2,9 +2,14 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <application
         android:allowBackup="false"
-        android:label="自用模块"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        <activity android:name=".MainActivity" android:exported="true">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.SelfModule">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -18,7 +23,7 @@
             android:grantUriPermissions="false" />
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposedscope" android:value="com.kugou.android.lite" />
-        <meta-data android:name="xposeddescription" android:value="Per-app configurable personal LSPosed module" />
+        <meta-data android:name="xposeddescription" android:value="@string/module_description" />
         <meta-data android:name="xposedminversion" android:value="82" />
     </application>
 </manifest>
