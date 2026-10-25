@@ -76,15 +76,16 @@ class HomeScreen(private val host: ScreenHost) {
             minimumHeight = ui.dp(64)
         }
 
+        // 只有图标、应用名、包名可点击进入设置；卡片其余区域（版本、状态、空白）不响应。
+        val openSettings = { host.openApp(entry.pkg, entry.label) }
+        val removeApp = { confirmRemove(entry); true }
+
         val left = LinearLayout(ui.activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, ui.dp(6), ui.dp(8), ui.dp(6))
-            isClickable = true
-            isFocusable = true
-            contentDescription = "进入${entry.label}设置"
-            setOnClickListener { host.openApp(entry.pkg, entry.label) }
-            setOnLongClickListener { confirmRemove(entry); true }
+            isClickable = false
+            isFocusable = false
         }
 
         val placeholder: Drawable =
@@ -92,15 +93,34 @@ class HomeScreen(private val host: ScreenHost) {
         val iconView = ui.icon(repo.icon(entry.pkg) ?: placeholder, 40).apply {
             alpha = if (entry.installed) 1f else 0.5f
             (layoutParams as LinearLayout.LayoutParams).rightMargin = ui.dp(10)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "进入${entry.label}设置"
+            setOnClickListener { openSettings() }
+            setOnLongClickListener { removeApp() }
         }
         left.addView(iconView)
 
         val details = LinearLayout(ui.activity).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
+            isClickable = false
+            isFocusable = false
         }
-        details.addView(ui.label(entry.label, 15, if (entry.installed) Palette.ink else Palette.muted, true))
-        details.addView(ui.label(entry.pkg, 10, Palette.muted, false).apply { setPadding(0, ui.dp(2), 0, 0) })
+
+        fun clickableText(text: String, sizeSp: Int, color: Int, bold: Boolean, topPad: Int) =
+            ui.label(text, sizeSp, color, bold).apply {
+                setPadding(0, ui.dp(topPad), 0, ui.dp(1))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { openSettings() }
+                setOnLongClickListener { removeApp() }
+            }
+
+        details.addView(
+            clickableText(entry.label, 15, if (entry.installed) Palette.ink else Palette.muted, true, 0)
+        )
+        details.addView(clickableText(entry.pkg, 10, Palette.muted, false, 2))
         details.addView(ui.label("版本：${entry.version ?: "未安装"}", 10, Palette.muted, false))
 
         val (chipText, chipColor, chipBackground) = when {
