@@ -206,18 +206,9 @@ class MainHook : IXposedHookLoadPackage {
                 "show",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val dialog = param.thisObject as? android.app.Dialog ?: return
+                        // 不再在 show 之前拦截：否则界面没布局，截不到图。
+                        // 统一在 after 里延迟判断、截图、再关闭。
                         if (showingConfirm) return
-                        try {
-                            val context = dialog.context ?: return
-                            if (loadBlockRules(context).mode == "block") {
-                                param.result = null
-                                logFramework("自用模块: 已拦截弹窗（规则=全部拦截）")
-                                showBlockedHint(context, pkg)
-                            }
-                        } catch (t: Throwable) {
-                            logFramework("自用模块: 拦截判断异常：${describe(t)}")
-                        }
                     }
 
                     override fun afterHookedMethod(param: MethodHookParam) {
@@ -225,8 +216,9 @@ class MainHook : IXposedHookLoadPackage {
                         if (showingConfirm) return
                         try {
                             val context = dialog.context ?: return
-                            if (loadBlockRules(context).mode in setOf("allow", "block")) return
-                            // show() 之后布局才完成，延迟一点再读标题、再决定是否询问。
+                            val mode = loadBlockRules(context).mode
+                            if (mode == "allow") return
+                            // show() 之后布局才完成，延迟一点再读标题、截图、再决定是否拦截。
                             dialog.window?.decorView?.postDelayed({
                                 try {
                                     evaluateShownDialog(pkg, dialog)
@@ -266,18 +258,20 @@ class MainHook : IXposedHookLoadPackage {
         // 1. 自定义关键字（命中标题或任意文本就拦）
         val keywords = com.example.selfxposed.Keywords.load(context)
         if (keywords.isNotEmpty() && keywords.any { it.isNotBlank() && joined.contains(it, ignoreCase = true) }) {
+            captureScreenshot(context, dialog)
             dialog.dismissQuietly()
             logFramework("自用模块: 关键字命中，已拦截弹窗")
             showBlockedHint(context, pkg)
             return
         }
 
-        // 2. 已学习的规则（只拦指定标题）
-        if (rules.mode == "titles" && title != null &&
-            rules.titles.any { it.isNotBlank() && (title.contains(it) || it.contains(title)) }
-        ) {
+        // 2. 已学习的规则
+        val ruleHit = rules.mode == "block" || (rules.mode == "titles" && title != null &&
+            rules.titles.any { it.isNotBlank() && (title.contains(it) || it.contains(title)) })
+        if (ruleHit) {
+            captureScreenshot(context, dialog)
             dialog.dismissQuietly()
-            logFramework("自用模块: 已关闭弹窗「$title」（规则=只拦这个）")
+            logFramework("自用模块: 已关闭弹窗「${title ?: "无标题"}」（规则=${rules.mode}）")
             showBlockedHint(context, pkg)
             return
         }
@@ -285,6 +279,40 @@ class MainHook : IXposedHookLoadPackage {
         if (rules.mode.isNotEmpty()) return
         if (!askedThisProcess.add(pkg)) return
         showConfirmCard(context, pkg, dialog, title)
+    }
+
+    /** 把弹窗画成图片存到目标应用自己的目录，供模块 UI 查看。 */
+    private fun captureScreenshot(context: android.content.Context, dialog: android.app.Dialog) {
+        try {
+            val decor = dialog.window?.decorView ?: return
+            val width = decor.width
+            val height = decor.height
+            if (width <= 0 || height <= 0) return
+            val bitmap = android.graphics.Bitmap.createBitmap(
+                width, height, android.graphics.Bitmap.Config.ARGB_8888
+            )
+            decor.draw(android.graphics.Canvas(bitmap))
+            val dir = java.io.File(context.filesDir, SHOT_DIR).apply { mkdirs() }
+            val name = "${System.currentTimeMillis()}.png"
+            java.io.FileOutputStream(java.io.File(dir, name)).use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 80, out)
+            }
+            bitmap.recycle()
+            pruneScreenshots(dir)
+            logFramework("自用模块: 已保存拦截截图 $name")
+        } catch (t: Throwable) {
+            logFramework("自用模块: 截图失败：${describe(t)}")
+        }
+    }
+
+    private fun pruneScreenshots(dir: java.io.File) {
+        try {
+            val shots = dir.listFiles { file -> file.isFile && file.name.endsWith(".png") }
+                ?.sortedBy { it.name } ?: return
+            if (shots.size <= MAX_SHOTS) return
+            shots.take(shots.size - MAX_SHOTS).forEach { it.delete() }
+        } catch (_: Throwable) {
+        }
     }
 
     /** 样式优先级：目标应用本地（自定义，root 写入）→ 模块配置（预设，低 targetSdk 免 root）→ 默认。 */
@@ -691,6 +719,10 @@ class MainHook : IXposedHookLoadPackage {
         private const val RULES_PREFS = "selfxposed_block"
         private const val KEY_MODE = "mode"
         private const val KEY_TITLES = "titles"
+
+        /** 拦截截图存放目录（目标应用自己的 files 下）与保留数量。 */
+        private const val SHOT_DIR = "blocked"
+        private const val MAX_SHOTS = 20
 
         /** 正在显示我们自己的确认卡时，跳过守卫，避免递归。 */
         @Volatile

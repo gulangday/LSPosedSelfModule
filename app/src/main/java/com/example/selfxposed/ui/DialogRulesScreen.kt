@@ -55,13 +55,20 @@ class DialogRulesScreen(
             return
         }
 
-        targets.forEach { pkg ->
+        targets.forEachIndexed { index, pkg ->
             val rule = DialogRules.read(pkg)
             val card = ui.card()
             card.addView(ui.label(repo.label(pkg), 15, Palette.ink, true))
             card.addView(ui.label(pkg, 10, Palette.muted, false).apply {
                 setPadding(0, ui.dp(2), 0, 0)
             })
+
+            // 图片在上
+            addShots(card, pkg)
+            // 分割线：上面是界面截图，下面是规则信息
+            card.addView(ui.divider())
+
+            // 规则信息在图片下面
             if (rule == null) {
                 card.addView(ui.chip("未设置（或读取失败）", Palette.muted, Palette.surfaceMuted))
             } else {
@@ -76,11 +83,93 @@ class DialogRulesScreen(
                 })
             }
             into.addView(card)
+            if (index < targets.lastIndex) into.addView(ui.divider())
         }
 
         into.addView(ui.actionCard("刷新", "重新读取规则") {
             ShizukuBridge.bind(android.content.ComponentName(ui.activity, com.example.selfxposed.RemoteService::class.java))
             host.refresh()
         })
+    }
+
+    /** 拦截截图：显示最近 3 张缩略图，点击看大图。 */
+    private fun addShots(card: android.widget.LinearLayout, pkg: String) {
+        val shots = loadShots(pkg)
+        card.addView(ui.label("拦截截图", 12, Palette.muted, true).apply {
+            setPadding(0, ui.dp(10), 0, 0)
+        })
+        if (shots.isEmpty()) {
+            card.addView(ui.label("还没有截图（拦截弹窗后自动保存）", 11, Palette.muted, false).apply {
+                setPadding(0, ui.dp(4), 0, 0)
+            })
+            return
+        }
+        val row = android.widget.LinearLayout(ui.activity).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            setPadding(0, ui.dp(6), 0, 0)
+        }
+        shots.forEach { bitmap ->
+            val image = android.widget.ImageView(ui.activity).apply {
+                setImageBitmap(bitmap)
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                background = ui.rounded(Palette.surfaceMuted, 10)
+                setPadding(2, 2, 2, 2)
+                isClickable = true
+                setOnClickListener { showLarge(bitmap) }
+            }
+            row.addView(image, android.widget.LinearLayout.LayoutParams(0, ui.dp(96), 1f).apply {
+                rightMargin = ui.dp(8)
+            })
+        }
+        card.addView(row)
+    }
+
+    private fun loadShots(pkg: String, limit: Int = 3): List<android.graphics.Bitmap> {
+        return try {
+            val dir = "/data/data/$pkg/files/blocked"
+            val listing = com.example.selfxposed.RootShell.exec("ls -1t $dir 2>/dev/null | head -$limit")
+            if (listing.isBlank()) return emptyList()
+            listing.lines()
+                .map { it.trim() }
+                .filter { it.endsWith(".png") }
+                .mapNotNull { name ->
+                    val raw = com.example.selfxposed.RootShell.exec("base64 -w0 $dir/$name 2>/dev/null")
+                    if (raw.isBlank()) {
+                        null
+                    } else {
+                        try {
+                            val bytes = android.util.Base64.decode(raw.trim(), android.util.Base64.DEFAULT)
+                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    }
+                }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun showLarge(bitmap: android.graphics.Bitmap) {
+        try {
+            val dialog = android.app.Dialog(ui.activity, android.R.style.Theme_Translucent_NoTitleBar)
+            val image = android.widget.ImageView(ui.activity).apply {
+                setImageBitmap(bitmap)
+                adjustViewBounds = true
+                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                setOnClickListener { dialog.dismiss() }
+            }
+            val wrapper = android.widget.FrameLayout(ui.activity).apply {
+                setBackgroundColor(android.graphics.Color.argb(220, 0, 0, 0))
+                setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16))
+                addView(image, android.widget.FrameLayout.LayoutParams(-1, -1))
+            }
+            dialog.setContentView(wrapper)
+            dialog.window?.setBackgroundDrawable(
+                android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
+            )
+            dialog.show()
+        } catch (_: Throwable) {
+        }
     }
 }
