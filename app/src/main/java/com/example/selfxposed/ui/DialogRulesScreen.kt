@@ -1,13 +1,19 @@
 package com.example.selfxposed.ui
 
+import android.graphics.Bitmap
+import android.widget.ImageView
 import android.widget.LinearLayout
 import com.example.selfxposed.DialogRules
+import com.example.selfxposed.RootShell
 import com.example.selfxposed.ShizukuBridge
 import com.example.selfxposed.WorkMode
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 弹窗规则管理：规则存在目标应用自己的数据里（绕开 targetSdk 35 的限制）。
- * 读取/清除需要 root 能力：Root 模式（直接 su）或 Shizuku 模式（Shizuku 以 root 启动）。
+ * 每条拦截记录 = 一张弹窗截图 + 标题 / 时间，方便回溯拦了哪些弹窗。
  */
 class DialogRulesScreen(
     private val host: ScreenHost,
@@ -15,6 +21,12 @@ class DialogRulesScreen(
 ) {
     private val ui get() = host.ui
     private val repo get() = host.repo
+
+    private data class ShotRecord(
+        val bitmap: Bitmap,
+        val title: String,
+        val timeText: String
+    )
 
     fun render(into: LinearLayout) {
         into.addView(ui.backRow("‹  返回") {
@@ -63,12 +75,6 @@ class DialogRulesScreen(
                 setPadding(0, ui.dp(2), 0, 0)
             })
 
-            // 图片在上
-            addShots(card, pkg)
-            // 分割线：上面是界面截图，下面是规则信息
-            card.addView(ui.divider())
-
-            // 规则信息在图片下面
             if (rule == null) {
                 card.addView(ui.chip("未设置（或读取失败）", Palette.muted, Palette.surfaceMuted))
             } else {
@@ -78,85 +84,105 @@ class DialogRulesScreen(
                         setPadding(0, ui.dp(6), 0, 0)
                     })
                 }
-                card.addView(ui.actionCard("清除规则", "下次弹窗会重新询问") {
-                    if (DialogRules.clear(pkg)) host.refresh() else host.toast("清除失败，检查 root / Shizuku 授权")
-                })
             }
+
+            card.addView(ui.divider())
+            addRecords(card, pkg)
             into.addView(card)
             if (index < targets.lastIndex) into.addView(ui.divider())
         }
 
+        // 与「刷新」同级：整页操作
         into.addView(ui.actionCard("刷新", "重新读取规则") {
             ShizukuBridge.bind(android.content.ComponentName(ui.activity, com.example.selfxposed.RemoteService::class.java))
             host.refresh()
         })
+        into.addView(ui.actionCard("清除规则", "删除这些规则和截图，下次弹窗重新询问") {
+            var ok = true
+            targets.forEach { pkg -> if (!DialogRules.clear(pkg)) ok = false }
+            if (ok) host.refresh() else host.toast("清除失败，检查 root / Shizuku 授权")
+        })
     }
 
-    /** 拦截截图：显示最近 3 张缩略图，点击看大图。 */
-    private fun addShots(card: android.widget.LinearLayout, pkg: String) {
-        val shots = loadShots(pkg)
-        card.addView(ui.label("拦截截图", 12, Palette.muted, true).apply {
-            setPadding(0, ui.dp(10), 0, 0)
-        })
-        if (shots.isEmpty()) {
-            card.addView(ui.label("还没有截图（拦截弹窗后自动保存）", 11, Palette.muted, false).apply {
+    /** 拦截记录：每条 = 缩略图 + 标题 + 时间，点击看大图。 */
+    private fun addRecords(card: LinearLayout, pkg: String) {
+        card.addView(ui.label("拦截记录", 12, Palette.muted, true))
+        val records = loadRecords(pkg)
+        if (records.isEmpty()) {
+            card.addView(ui.label("还没有记录（拦截弹窗后自动保存）", 11, Palette.muted, false).apply {
                 setPadding(0, ui.dp(4), 0, 0)
             })
             return
         }
-        val row = android.widget.LinearLayout(ui.activity).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            setPadding(0, ui.dp(6), 0, 0)
-        }
-        shots.forEach { bitmap ->
-            val image = android.widget.ImageView(ui.activity).apply {
-                setImageBitmap(bitmap)
-                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-                background = ui.rounded(Palette.surfaceMuted, 10)
-                setPadding(2, 2, 2, 2)
-                isClickable = true
-                setOnClickListener { showLarge(bitmap) }
+        records.forEach { record ->
+            val row = LinearLayout(ui.activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, ui.dp(8), 0, 0)
             }
-            row.addView(image, android.widget.LinearLayout.LayoutParams(0, ui.dp(96), 1f).apply {
-                rightMargin = ui.dp(8)
+            val image = ImageView(ui.activity).apply {
+                setImageBitmap(record.bitmap)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = ui.rounded(Palette.surfaceMuted, 8)
+                isClickable = true
+                setOnClickListener { showLarge(record.bitmap) }
+            }
+            row.addView(image, LinearLayout.LayoutParams(ui.dp(72), ui.dp(72)))
+            val info = LinearLayout(ui.activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(ui.dp(12), 0, 0, 0)
+            }
+            info.addView(ui.label(record.title.ifBlank { "弹窗截图" }, 13, Palette.ink, true))
+            info.addView(ui.label(record.timeText, 11, Palette.muted, false).apply {
+                setPadding(0, ui.dp(4), 0, 0)
             })
+            row.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
+            ui.pressable(row, { showLarge(record.bitmap) })
+            card.addView(row)
         }
-        card.addView(row)
     }
 
-    private fun loadShots(pkg: String, limit: Int = 3): List<android.graphics.Bitmap> {
+    private fun loadRecords(pkg: String, limit: Int = 10): List<ShotRecord> {
         return try {
             val dir = "/data/data/$pkg/files/blocked"
-            val listing = com.example.selfxposed.RootShell.exec("ls -1t $dir 2>/dev/null | head -$limit")
+            val listing = RootShell.exec("ls -1t $dir 2>/dev/null | head -$limit")
             if (listing.isBlank()) return emptyList()
             listing.lines()
                 .map { it.trim() }
                 .filter { it.endsWith(".png") }
                 .mapNotNull { name ->
-                    val raw = com.example.selfxposed.RootShell.exec("base64 -w0 $dir/$name 2>/dev/null")
+                    val raw = RootShell.exec("base64 -w0 $dir/$name 2>/dev/null")
                     if (raw.isBlank()) {
-                        null
-                    } else {
-                        try {
-                            val bytes = android.util.Base64.decode(raw.trim(), android.util.Base64.DEFAULT)
-                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        } catch (_: Throwable) {
-                            null
-                        }
+                        return@mapNotNull null
                     }
+                    val bitmap = try {
+                        val bytes = android.util.Base64.decode(raw.trim(), android.util.Base64.DEFAULT)
+                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    } catch (_: Throwable) {
+                        null
+                    } ?: return@mapNotNull null
+                    val title = RootShell.exec(
+                        "cat $dir/${name.removeSuffix(".png")}.txt 2>/dev/null"
+                    ).trim()
+                    val stamp = name.substringBefore(".png").toLongOrNull() ?: 0L
+                    val timeText = if (stamp > 0) {
+                        SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(stamp))
+                    } else {
+                        ""
+                    }
+                    ShotRecord(bitmap, title, timeText)
                 }
         } catch (_: Throwable) {
             emptyList()
         }
     }
 
-    private fun showLarge(bitmap: android.graphics.Bitmap) {
+    private fun showLarge(bitmap: Bitmap) {
         try {
             val dialog = android.app.Dialog(ui.activity, android.R.style.Theme_Translucent_NoTitleBar)
-            val image = android.widget.ImageView(ui.activity).apply {
+            val image = ImageView(ui.activity).apply {
                 setImageBitmap(bitmap)
                 adjustViewBounds = true
-                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                scaleType = ImageView.ScaleType.FIT_CENTER
                 setOnClickListener { dialog.dismiss() }
             }
             val wrapper = android.widget.FrameLayout(ui.activity).apply {

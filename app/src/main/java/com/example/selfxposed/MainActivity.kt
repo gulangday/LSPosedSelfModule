@@ -192,23 +192,34 @@ class MainActivity : Activity(), ScreenHost {
     }
 
     private fun buildShell() {
+        val isLandscape = resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
         root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            // 横屏：左侧竖排导航 + 右侧内容铺满；竖屏：顶部标题 + 内容 + 底部导航
+            orientation = if (isLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = if (isLandscape) Gravity.TOP else Gravity.CENTER_HORIZONTAL
             setBackgroundColor(Palette.background)
         }
 
+        val maxWidth = minOf(resources.displayMetrics.widthPixels, ui.dp(520))
+
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(ui.dp(20), ui.dp(18), ui.dp(20), ui.dp(14))
+            setPadding(
+                ui.dp(20),
+                ui.dp(if (isLandscape) 12 else 18),
+                ui.dp(20),
+                ui.dp(if (isLandscape) 8 else 14)
+            )
         }
-        header.addView(ui.label("自用模块", 22, Palette.ink, true))
+        header.addView(ui.label("自用模块", if (isLandscape) 18 else 22, Palette.ink, true))
         header.addView(ui.label("LSPosed · 模块管理", 12, Palette.muted, false).apply {
             setPadding(0, ui.dp(3), 0, 0)
         })
         header.addView(ui.label("v${versionName()} · 内测版", 11, Palette.accent, true).apply {
             setPadding(0, ui.dp(6), 0, 0)
         })
-        root.addView(header)
 
         scroll = ScrollView(this).apply { clipToPadding = false }
         content = LinearLayout(this).apply {
@@ -216,26 +227,54 @@ class MainActivity : Activity(), ScreenHost {
             setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(20))
         }
         scroll.addView(content)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        val navWrap = LinearLayout(this).apply {
-            gravity = Gravity.CENTER
-            setPadding(ui.dp(24), ui.dp(8), ui.dp(24), ui.dp(12))
-        }
-        val nav = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4))
-            background = ui.rounded(Color.WHITE, 24)
-            elevation = ui.dp(2).toFloat()
-        }
         navHome = navItem("主页")
         navFeatures = navItem("功能")
         navSettings = navItem("设置")
-        nav.addView(navHome, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
-        nav.addView(navFeatures, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
-        nav.addView(navSettings, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
-        navWrap.addView(nav, LinearLayout.LayoutParams(-1, -2))
-        root.addView(navWrap)
+
+        if (isLandscape) {
+            // 左侧竖排导航（铺满高度），右侧内容区铺满，不留白边
+            val side = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(ui.dp(10), ui.dp(20), ui.dp(10), ui.dp(20))
+                setBackgroundColor(Palette.background)
+            }
+            side.addView(ui.label("自用", 13, Palette.accent, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, ui.dp(16))
+            })
+            listOf(navHome, navFeatures, navSettings).forEachIndexed { index, item ->
+                item.gravity = Gravity.CENTER
+                side.addView(item, LinearLayout.LayoutParams(-1, ui.dp(52)).apply {
+                    if (index > 0) topMargin = ui.dp(10)
+                })
+            }
+            root.addView(side, LinearLayout.LayoutParams(ui.dp(104), -1))
+
+            val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            right.addView(header, LinearLayout.LayoutParams(-1, -2))
+            right.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+            root.addView(right, LinearLayout.LayoutParams(0, -1, 1f))
+        } else {
+            root.addView(header, LinearLayout.LayoutParams(maxWidth, -2))
+            root.addView(scroll, LinearLayout.LayoutParams(maxWidth, 0, 1f))
+
+            val navWrap = LinearLayout(this).apply {
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(24), ui.dp(8), ui.dp(24), ui.dp(12))
+            }
+            val nav = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4))
+                background = ui.rounded(Color.WHITE, 24)
+                elevation = ui.dp(2).toFloat()
+            }
+            nav.addView(navHome, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
+            nav.addView(navFeatures, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
+            nav.addView(navSettings, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
+            navWrap.addView(nav, LinearLayout.LayoutParams(-1, -2))
+            root.addView(navWrap, LinearLayout.LayoutParams(maxWidth, -2))
+        }
 
         setContentView(root)
 
@@ -324,7 +363,7 @@ class MainActivity : Activity(), ScreenHost {
             PAGE_PERMISSIONS -> PermissionsScreen(this).render(content)
             PAGE_ABOUT -> AboutScreen(this).render(content)
             PAGE_APP -> AppSettingsScreen(this, selectedPackage, selectedName).render(content)
-            PAGE_LOGS -> LogsScreen(this, logsPackage, logsName, logsBackPage).render(content)
+            PAGE_LOGS -> LogsScreen(this, logsPackage, logsName).render(content)
             PAGE_HELP -> HelpScreen(this).render(content)
             PAGE_PICKER -> PickerScreen(this).render(content)
         }
@@ -375,8 +414,20 @@ class MainActivity : Activity(), ScreenHost {
     override fun openLogs(pkg: String, name: String) {
         logsPackage = pkg
         logsName = name
-        logsBackPage = if (currentPage == PAGE_APP) PAGE_APP else PAGE_SETTINGS
+        // 记住从哪进来的，返回时回原页面
+        logsBackPage = currentPage
         renderPage(PAGE_LOGS, animate = true)
+    }
+
+    /** 从日志页返回来源页。 */
+    override fun backFromLogs() {
+        val target = when {
+            selectedPackage.isEmpty() -> PAGE_SETTINGS
+            logsBackPage == PAGE_APP -> PAGE_APP
+            logsBackPage == PAGE_UPDATE_BLOCK -> PAGE_UPDATE_BLOCK
+            else -> PAGE_SETTINGS
+        }
+        renderPage(target, animate = true)
     }
 
     override fun openHelp() {
@@ -415,16 +466,15 @@ class MainActivity : Activity(), ScreenHost {
     private fun handleBack() {
         when (currentPage) {
             PAGE_APP, PAGE_PICKER -> renderPage(PAGE_HOME, animate = true)
-            PAGE_LOGS -> renderPage(
-                if (logsBackPage == PAGE_APP && selectedPackage.isNotEmpty()) PAGE_APP else PAGE_SETTINGS,
-                animate = true
-            )
+            PAGE_LOGS -> backFromLogs()
             PAGE_HELP -> renderPage(if (previousPage == PAGE_SETTINGS) PAGE_SETTINGS else PAGE_HOME, animate = true)
             PAGE_PERMISSIONS, PAGE_ABOUT -> renderPage(PAGE_SETTINGS, animate = true)
             PAGE_UPDATE_BLOCK -> renderPage(PAGE_FEATURES, animate = true)
-            PAGE_DIALOG_RULES -> renderPage(PAGE_FEATURES, animate = true)
-            PAGE_HINT_STYLE -> renderPage(PAGE_FEATURES, animate = true)
-            PAGE_KEYWORDS -> renderPage(PAGE_UPDATE_BLOCK, animate = true)
+            // 从某个应用的「拦截弹窗」进来的，退回该应用页；否则退回功能页
+            PAGE_DIALOG_RULES, PAGE_HINT_STYLE, PAGE_KEYWORDS -> renderPage(
+                if (selectedPackage.isNotEmpty()) PAGE_UPDATE_BLOCK else PAGE_FEATURES,
+                animate = true
+            )
             PAGE_FEATURES -> renderPage(PAGE_HOME, animate = true)
             PAGE_SETTINGS -> renderPage(PAGE_HOME, animate = true)
             else -> finish()

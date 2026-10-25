@@ -22,8 +22,12 @@ object DialogRules {
         return Rule(mode, titles)
     }
 
+    /** 清除规则，同时删掉对应的拦截截图。 */
     fun clear(pkg: String): Boolean {
-        val out = RootShell.exec("rm -f ${path(pkg)} ${path(pkg)}.bak 2>/dev/null; echo done")
+        val shotDir = "/data/data/$pkg/files/blocked"
+        val out = RootShell.exec(
+            "rm -f ${path(pkg)} ${path(pkg)}.bak 2>/dev/null; rm -rf $shotDir 2>/dev/null; echo done"
+        )
         return out.contains("done")
     }
 

@@ -63,18 +63,37 @@ class ModuleRepository(private val activity: Activity) {
      *
      * 正常情况模块能收到握手记录；但 targetSdk 30+ 的应用受包可见性限制，
      * 根本调不到模块的 Provider，只能由 hook 在应用本地写一个运行标记，
-     * 模块再用 root 去读。
+     * 模块随后用 root/Shizuku 读（这一步放后台，避免卡启动）。
      */
     fun hookDetected(pkg: String): Boolean {
         if (ConfigClient.hookDetected(resolver, pkg)) return true
-        return hookSeenViaRoot(pkg)
+        return hookCache[pkg] == true
     }
 
-    private fun hookSeenViaRoot(pkg: String): Boolean = try {
+    private val hookCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private var lastHookRefresh = 0L
+
+    /** 后台刷新 root 侧的 hook 状态；10 秒内不重复读，避免刷主页时反复拉起 su。 */
+    fun refreshHookStatuses(pkgs: List<String>, onChanged: () -> Unit) {
+        val now = System.currentTimeMillis()
+        if (pkgs.isEmpty() || now - lastHookRefresh < 10_000L) return
+        lastHookRefresh = now
+        Thread {
+            var changed = false
+            pkgs.forEach { pkg ->
+                val detected = readSeenViaRoot(pkg)
+                if (hookCache[pkg] != detected) {
+                    hookCache[pkg] = detected
+                    changed = true
+                }
+            }
+            if (changed) onChanged()
+        }.start()
+    }
+
+    private fun readSeenViaRoot(pkg: String): Boolean = try {
         val info = pm.getPackageInfo(pkg, 0)
         if ((info.applicationInfo?.targetSdkVersion ?: 0) < 30) {
-            false
-        } else if (!RootShell.hasRootCached()) {
             false
         } else {
             val out = RootShell.exec("cat /data/data/$pkg/files/selfxposed_seen 2>/dev/null")

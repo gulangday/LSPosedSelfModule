@@ -25,6 +25,237 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class MainHook : IXposedHookLoadPackage {
 
+    /** 拦截拾取：悬浮球 + 点选弹窗。 */
+    @Volatile
+    private var picking = false
+    private val floatingBalls = java.util.WeakHashMap<Activity, android.view.View>()
+    private val pickTargets = java.util.WeakHashMap<Activity, String>()
+
+    private fun installPickBall(activity: Activity, pkg: String) {
+        val decor = activity.window?.decorView as? android.view.ViewGroup ?: return
+        if (floatingBalls[activity] != null) return
+        // 只有悬浮窗模式才显示球
+        if (loadPickMode(activity) != PICK_MODE_BALL) return
+        // 用户长按关闭过就不显示
+        if (java.io.File(activity.filesDir, BALL_OFF_FILE).exists()) return
+        pickTargets[activity] = pkg
+        val ball = createPickBall(activity, pkg)
+        decor.addView(ball, ballLayoutParams(activity))
+        floatingBalls[activity] = ball
+        logFramework("自用模块: 拦截悬浮球已添加（$pkg）")
+    }
+
+    /** 拦截方式：ball = 悬浮球点选；auto = 弹窗出现时自动询问。 */
+    private fun loadPickMode(context: android.content.Context): String = try {
+        val file = java.io.File(context.filesDir, PICK_MODE_FILE)
+        if (!file.exists()) PICK_MODE_BALL else file.readText().trim().ifBlank { PICK_MODE_BALL }
+    } catch (_: Throwable) {
+        PICK_MODE_BALL
+    }
+
+    /** 把球挂到弹窗自己的窗口上，保证它在弹窗之上（可点）；同时隐藏 Activity 上的球。 */
+    private fun attachBallToDialog(dialog: android.app.Dialog, pkg: String) {
+        try {
+            val decor = dialog.window?.decorView as? android.view.ViewGroup ?: return
+            if (decor.findViewWithTag<android.view.View>(BALL_TAG) != null) return
+            val context = dialog.context ?: return
+            // 隐藏 Activity 上的球，避免出现两个
+            synchronized(floatingBalls) {
+                floatingBalls.values.forEach { it.visibility = android.view.View.GONE }
+                logFramework("自用模块: 已隐藏 ${floatingBalls.size} 个 Activity 悬浮球")
+            }
+            val ball = createPickBall(context, pkg)
+            val density = context.resources.displayMetrics.density
+            fun dp(value: Int) = (value * density + 0.5f).toInt()
+            val params = android.widget.FrameLayout.LayoutParams(dp(44), dp(44)).apply {
+                gravity = android.view.Gravity.TOP or android.view.Gravity.END
+                topMargin = dp(8)
+                rightMargin = dp(8)
+            }
+            decor.addView(ball, params)
+            logFramework("自用模块: 悬浮球已挂到弹窗上层")
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 弹窗关闭后恢复 Activity 上的球（仅当没有别的弹窗还在显示）。 */
+    private fun restoreActivityBalls() {
+        try {
+            val stillShowing = synchronized(shownDialogs) {
+                shownDialogs.any { it.get()?.isShowing == true }
+            }
+            if (stillShowing) return
+            synchronized(floatingBalls) {
+                floatingBalls.values.forEach { it.visibility = android.view.View.VISIBLE }
+            }
+            logFramework("自用模块: 恢复 Activity 悬浮球")
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 在内容容器里找"真正的卡片"（有背景、面积最大的子 View）。 */
+    private fun findCardView(content: android.view.ViewGroup): android.view.View {
+        var best: android.view.View? = null
+        var bestArea = 0
+        for (index in 0 until content.childCount) {
+            val child = content.getChildAt(index)
+            if (!child.isShown || child.width <= 0 || child.height <= 0) continue
+            val area = child.width * child.height
+            if (child.background != null && area > bestArea) {
+                best = child
+                bestArea = area
+            }
+        }
+        return best ?: content
+    }
+
+    private fun ballLayoutParams(context: android.content.Context): android.widget.FrameLayout.LayoutParams {
+        val density = context.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density + 0.5f).toInt()
+        return android.widget.FrameLayout.LayoutParams(dp(46), dp(46)).apply {
+            gravity = android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
+            // 离屏幕边缘留出距离，避免被返回手势吃掉点击
+            rightMargin = dp(36)
+        }
+    }
+
+    private fun createPickBall(context: android.content.Context, pkg: String): android.widget.TextView {
+        val density = context.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density + 0.5f).toInt()
+        val ball = android.widget.TextView(context).apply {
+            text = "拦"
+            tag = BALL_TAG
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.argb(200, 103, 80, 164))
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+            }
+            elevation = dp(4).toFloat()
+            isClickable = true
+            isFocusable = false
+        }
+
+        var downX = 0f
+        var downY = 0f
+        var startMargin = 0
+        var startTop = 0
+        var dragging = false
+        var longPressed = false
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val longPressRunnable = Runnable {
+            longPressed = true
+            try {
+                java.io.File(context.filesDir, BALL_OFF_FILE).writeText("1")
+                ball.visibility = android.view.View.GONE
+                android.widget.Toast.makeText(context, "悬浮球已关闭，可在模块里重新打开", android.widget.Toast.LENGTH_SHORT).show()
+                logFramework("自用模块: 悬浮球已由长按关闭")
+            } catch (_: Throwable) {
+            }
+        }
+        ball.setOnTouchListener { view, event ->
+            val lp = view.layoutParams as? android.widget.FrameLayout.LayoutParams
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    dragging = false
+                    longPressed = false
+                    if (lp != null) {
+                        startMargin = lp.rightMargin
+                        startTop = lp.topMargin
+                    }
+                    handler.postDelayed(longPressRunnable, 700L)
+                    true
+                }
+
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    if (Math.abs(dx) > dp(6) || Math.abs(dy) > dp(6)) {
+                        dragging = true
+                        handler.removeCallbacks(longPressRunnable)
+                    }
+                    if (dragging && lp != null) {
+                        lp.rightMargin = (startMargin - dx.toInt()).coerceAtLeast(0)
+                        lp.topMargin = (startTop + dy.toInt()).coerceAtLeast(0)
+                        view.layoutParams = lp
+                    }
+                    true
+                }
+
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(longPressRunnable)
+                    if (!dragging && !longPressed) startPicking(context, pkg)
+                    true
+                }
+
+                else -> false
+            }
+        }
+        return ball
+    }
+
+    /** 进入拾取模式：下一次触摸弹窗时拾取它。 */
+    private fun startPicking(context: android.content.Context, pkg: String) {
+        picking = true
+        highlightShownDialogs(context, true)
+        try {
+            android.widget.Toast.makeText(context, "请点击要拦截的弹窗", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (_: Throwable) {
+        }
+        logFramework("自用模块: 进入拾取模式（$pkg）")
+    }
+
+    /** 拾取模式下给已显示的弹窗描边（只框内容，不框整个透明窗口）。 */
+    private fun highlightShownDialogs(context: android.content.Context, on: Boolean) {
+        try {
+            val density = context.resources.displayMetrics.density
+            fun dp(value: Int) = (value * density + 0.5f).toInt()
+            var applied = 0
+            synchronized(shownDialogs) {
+                shownDialogs.forEach { ref ->
+                    try {
+                        val dialog = ref.get() ?: return@forEach
+                        val decor = dialog.window?.decorView as? android.view.ViewGroup ?: return@forEach
+                        if (!on) {
+                            decor.findViewWithTag<android.view.View>(HIGHLIGHT_TAG)?.let {
+                                decor.removeView(it)
+                            }
+                            return@forEach
+                        }
+                        // 真正的内容视图：decorView 一般只有一个子 View（content 容器）
+                        val content = decor.getChildAt(0) as? android.view.ViewGroup ?: return@forEach
+                        val card = findCardView(content)
+                        val cardLoc = IntArray(2)
+                        val decorLoc = IntArray(2)
+                        card.getLocationInWindow(cardLoc)
+                        decor.getLocationInWindow(decorLoc)
+                        val overlay = android.view.View(context).apply {
+                            tag = HIGHLIGHT_TAG
+                            background = android.graphics.drawable.GradientDrawable().apply {
+                                setStroke(dp(4), android.graphics.Color.argb(255, 103, 80, 164))
+                                cornerRadius = dp(10).toFloat()
+                            }
+                        }
+                        val params = android.widget.FrameLayout.LayoutParams(
+                            card.width, card.height
+                        ).apply {
+                            leftMargin = cardLoc[0] - decorLoc[0]
+                            topMargin = cardLoc[1] - decorLoc[1]
+                        }
+                        decor.addView(overlay, params)
+                        applied++
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            logFramework("自用模块: 弹窗描边 ${if (on) "开启" else "关闭"}，命中 $applied 个")
+        } catch (_: Throwable) {
+        }
+    }
+
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val pkg = lpparam.packageName ?: return
         if (!shouldHook(pkg)) return
@@ -60,11 +291,20 @@ class MainHook : IXposedHookLoadPackage {
         val resolver = activity.contentResolver
 
         // 0. 本地运行标记：targetSdk 高的应用无法回报状态（包可见性），
-        //    模块 UI 有 root 时读这个文件判断"Hook 是否跑过"。
+        //    模块 UI 有 root/Shizuku 时读这个文件判断"Hook 是否跑过"。
         try {
             java.io.File(activity.filesDir, "selfxposed_seen")
                 .writeText(System.currentTimeMillis().toString())
-        } catch (_: Throwable) {
+            logFramework("自用模块: 已写入运行标记（$pkg）")
+        } catch (t: Throwable) {
+            logFramework("自用模块: 写运行标记失败：${describe(t)}")
+        }
+
+        // 悬浮球：用于点选要拦截的弹窗
+        try {
+            installPickBall(activity, pkg)
+        } catch (t: Throwable) {
+            logFramework("自用模块: 悬浮球添加失败：${describe(t)}")
         }
 
         // 1. 记录一次运行时握手，供模块首页显示“已连接”。
@@ -231,9 +471,172 @@ class MainHook : IXposedHookLoadPackage {
                     }
                 }
             )
+            // 拾取模式：用户点弹窗时截获，识别这个弹窗并给出作用域
+            XposedHelpers.findAndHookMethod(
+                android.app.Dialog::class.java,
+                "dismiss",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        restoreActivityBalls()
+                    }
+                }
+            )
+            XposedHelpers.findAndHookMethod(
+                android.app.Dialog::class.java,
+                "dispatchTouchEvent",
+                android.view.MotionEvent::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (!picking) return
+                        val event = param.args.firstOrNull() as? android.view.MotionEvent ?: return
+                        if (event.actionMasked != android.view.MotionEvent.ACTION_UP) {
+                            param.result = true
+                            return
+                        }
+                        picking = false
+                        param.result = true
+                        val dialog = param.thisObject as? android.app.Dialog ?: return
+                        try {
+                            handlePickedDialog(dialog)
+                        } catch (t: Throwable) {
+                            logFramework("自用模块: 拾取处理失败：${describe(t)}")
+                        }
+                    }
+                }
+            )
             logFramework("自用模块: $pkg 通用弹窗守卫已安装")
         } catch (t: Throwable) {
             logFramework("自用模块: $pkg 通用弹窗守卫安装失败：${describe(t)}")
+        }
+    }
+
+    /** 用户点选了一个弹窗：显示它的作用域信息，并让用户确认拦截。 */
+    private fun handlePickedDialog(dialog: android.app.Dialog) {
+        val context = dialog.context ?: return
+        highlightShownDialogs(context, false)
+        val texts = ArrayList<String>()
+        try {
+            dialog.window?.decorView?.let { collectTexts(it, texts, 0) }
+        } catch (_: Throwable) {
+        }
+        val title = texts.firstOrNull { it.length in 1..60 } ?: ""
+        val className = dialog.javaClass.name.substringAfterLast('.')
+        val activityName = (context as? Activity)?.javaClass?.name?.substringAfterLast('.') ?: ""
+        val rect = android.graphics.Rect()
+        try {
+            dialog.window?.decorView?.getGlobalVisibleRect(rect)
+        } catch (_: Throwable) {
+        }
+        logFramework("自用模块: 拾取到弹窗 title=$title class=$className activity=$activityName")
+        showPickResult(context, dialog, title, className, activityName, rect)
+    }
+
+    /** 底部信息条：显示弹窗作用域，两个按钮「拦截这个 / 取消」。 */
+    private fun showPickResult(
+        context: android.content.Context,
+        dialog: android.app.Dialog,
+        title: String,
+        className: String,
+        activityName: String,
+        rect: android.graphics.Rect
+    ) {
+        try {
+            val density = context.resources.displayMetrics.density
+            fun dp(value: Int) = (value * density + 0.5f).toInt()
+            val body = android.widget.TextView(context).apply {
+                text = "检测到弹窗\n标题：${title.ifBlank { "无标题" }}\n类型：$className" +
+                    (if (activityName.isNotBlank()) " · 界面：$activityName" else "") +
+                    "\n位置：[${rect.left},${rect.top}]-[${rect.right},${rect.bottom}]"
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 12f
+                setLineSpacing(dp(3).toFloat(), 1f)
+                setPadding(dp(16), dp(12), dp(16), dp(6))
+            }
+            val row = android.widget.LinearLayout(context).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.END
+                setPadding(dp(12), 0, dp(12), dp(10))
+            }
+            val cancel = android.widget.TextView(context).apply {
+                text = "取消"
+                setTextColor(android.graphics.Color.argb(200, 200, 200, 210))
+                textSize = 13f
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+                setOnClickListener { dismissParent(this) }
+            }
+            val confirm = android.widget.TextView(context).apply {
+                text = "拦截这个"
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 13f
+                setPadding(dp(16), dp(8), dp(16), dp(8))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(android.graphics.Color.argb(255, 103, 80, 164))
+                    cornerRadius = dp(16).toFloat()
+                }
+            }
+            row.addView(cancel)
+            row.addView(confirm, android.widget.LinearLayout.LayoutParams(-2, -2).apply {
+                leftMargin = dp(8)
+            })
+
+            val card = android.widget.LinearLayout(context).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(android.graphics.Color.argb(235, 28, 27, 31))
+                    cornerRadius = dp(16).toFloat()
+                }
+                addView(body)
+                addView(row)
+            }
+
+            val picker = android.app.Dialog(context, android.R.style.Theme_Translucent_NoTitleBar)
+            val wrapper = android.widget.FrameLayout(context).apply {
+                setPadding(dp(16), dp(16), dp(16), dp(16))
+                addView(card, android.widget.FrameLayout.LayoutParams(-1, -2).apply {
+                    gravity = android.view.Gravity.BOTTOM
+                })
+            }
+            picker.setContentView(wrapper, android.view.ViewGroup.LayoutParams(-1, -1))
+            picker.window?.apply {
+                setBackgroundDrawable(
+                    android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
+                )
+                clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+                addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+                setLayout(-1, -1)
+            }
+            showingConfirm = true
+            picker.show()
+            showingConfirm = false
+
+            confirm.setOnClickListener {
+                try {
+                    saveBlockRules(context, "titles", title.ifBlank { className })
+                    dialog.dismissQuietly()
+                    logFramework("自用模块: 已按拾取结果拦截「${title.ifBlank { className }}」")
+                } catch (_: Throwable) {
+                }
+                picker.dismiss()
+            }
+            cancel.setOnClickListener { picker.dismiss() }
+        } catch (t: Throwable) {
+            showingConfirm = false
+            logFramework("自用模块: 拾取信息条显示失败：${describe(t)}")
+        }
+    }
+
+    private fun dismissParent(view: android.view.View) {
+        try {
+            var parent = view.parent
+            while (parent != null) {
+                if (parent is android.app.Dialog) {
+                    parent.dismiss()
+                    return
+                }
+                parent = parent.parent
+            }
+        } catch (_: Throwable) {
         }
     }
 
@@ -244,6 +647,7 @@ class MainHook : IXposedHookLoadPackage {
             shownDialogs.add(java.lang.ref.WeakReference(dialog))
         }
         attachLongPress(dialog, pkg)
+        attachBallToDialog(dialog, pkg)
         val context = dialog.context ?: return
         val rules = loadBlockRules(context)
 
@@ -258,10 +662,10 @@ class MainHook : IXposedHookLoadPackage {
         // 1. 自定义关键字（命中标题或任意文本就拦）
         val keywords = com.example.selfxposed.Keywords.load(context)
         if (keywords.isNotEmpty() && keywords.any { it.isNotBlank() && joined.contains(it, ignoreCase = true) }) {
-            captureScreenshot(context, dialog)
+            captureScreenshot(context, dialog, title)
             dialog.dismissQuietly()
             logFramework("自用模块: 关键字命中，已拦截弹窗")
-            showBlockedHint(context, pkg)
+            if (loadPickMode(context) == PICK_MODE_AUTO) showBlockedHint(context, pkg)
             return
         }
 
@@ -269,20 +673,68 @@ class MainHook : IXposedHookLoadPackage {
         val ruleHit = rules.mode == "block" || (rules.mode == "titles" && title != null &&
             rules.titles.any { it.isNotBlank() && (title.contains(it) || it.contains(title)) })
         if (ruleHit) {
-            captureScreenshot(context, dialog)
+            captureScreenshot(context, dialog, title)
             dialog.dismissQuietly()
             logFramework("自用模块: 已关闭弹窗「${title ?: "无标题"}」（规则=${rules.mode}）")
-            showBlockedHint(context, pkg)
+            if (loadPickMode(context) == PICK_MODE_AUTO) showBlockedHint(context, pkg)
             return
         }
 
-        if (rules.mode.isNotEmpty()) return
-        if (!askedThisProcess.add(pkg)) return
-        showConfirmCard(context, pkg, dialog, title)
+        // 没有命中规则时：自动模式弹询问框，悬浮球模式什么都不做
+        if (rules.mode.isEmpty() &&
+            loadPickMode(context) == PICK_MODE_AUTO &&
+            askedThisProcess.add(pkg)
+        ) {
+            showConfirmCard(context, pkg, dialog, title)
+        }
     }
 
-    /** 把弹窗画成图片存到目标应用自己的目录，供模块 UI 查看。 */
-    private fun captureScreenshot(context: android.content.Context, dialog: android.app.Dialog) {
+    /** 自动模式：弹窗出现后询问是否拦截。 */
+    private fun showConfirmCard(
+        context: android.content.Context,
+        pkg: String,
+        source: android.app.Dialog,
+        title: String?
+    ) {
+        showingConfirm = true
+        try {
+            val message = if (title.isNullOrBlank()) {
+                "检测到一个弹窗，要拦截它吗？"
+            } else {
+                "检测到弹窗：\n「$title」\n\n要拦截它吗？"
+            }
+            android.app.AlertDialog.Builder(context)
+                .setTitle("自用模块")
+                .setMessage(message)
+                .setPositiveButton("全部拦截") { _, _ ->
+                    saveBlockRules(context, "block", null)
+                    dismissAllShown()
+                }
+                .setNeutralButton("只拦这个") { _, _ ->
+                    saveBlockRules(context, "titles", title)
+                    dismissAllShown()
+                }
+                .setNegativeButton("不拦") { _, _ ->
+                    saveBlockRules(context, "allow", null)
+                }
+                .setOnDismissListener { showingConfirm = false }
+                .show()
+            logFramework("自用模块: 自动模式确认卡已显示")
+        } catch (t: Throwable) {
+            logFramework("自用模块: 确认卡显示失败：${describe(t)}")
+            showingConfirm = false
+        }
+    }
+
+    /**
+     * 把弹窗画成图片存到目标应用自己的目录，供模块 UI 查看。
+     * 同一个弹窗（内容相同）在短时间内被 show 多次时只保存一张。
+     */
+    private fun captureScreenshot(
+        context: android.content.Context,
+        dialog: android.app.Dialog,
+        title: String?
+    ) {
         try {
             val decor = dialog.window?.decorView ?: return
             val width = decor.width
@@ -292,14 +744,46 @@ class MainHook : IXposedHookLoadPackage {
                 width, height, android.graphics.Bitmap.Config.ARGB_8888
             )
             decor.draw(android.graphics.Canvas(bitmap))
-            val dir = java.io.File(context.filesDir, SHOT_DIR).apply { mkdirs() }
-            val name = "${System.currentTimeMillis()}.png"
-            java.io.FileOutputStream(java.io.File(dir, name)).use { out ->
-                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 80, out)
-            }
+
+            val buffer = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 80, buffer)
             bitmap.recycle()
+            val bytes = buffer.toByteArray()
+
+            // 内容去重：同一张图 5 秒内不重复保存
+            val hash = bytes.contentHashCode()
+            val now = System.currentTimeMillis()
+            if (hash == lastShotHash && now - lastShotAt < SHOT_DEDUP_MS) {
+                logFramework("自用模块: 相同弹窗已在 ${now - lastShotAt}ms 内截过，跳过")
+                return
+            }
+            lastShotHash = hash
+            lastShotAt = now
+
+            val dir = java.io.File(context.filesDir, SHOT_DIR).apply { mkdirs() }
+            // 同一个标题只保留最新一张，避免同一弹窗每次启动都累积
+            if (!title.isNullOrBlank()) {
+                dir.listFiles { file -> file.isFile && file.name.endsWith(".txt") }?.forEach { txt ->
+                    val old = try {
+                        txt.readText()
+                    } catch (_: Throwable) {
+                        ""
+                    }
+                    if (old == title) {
+                        java.io.File(dir, txt.name.removeSuffix(".txt") + ".png").delete()
+                        txt.delete()
+                    }
+                }
+            }
+            val base = now.toString()
+            java.io.FileOutputStream(java.io.File(dir, "$base.png")).use { out ->
+                out.write(bytes)
+            }
+            if (!title.isNullOrBlank()) {
+                java.io.File(dir, "$base.txt").writeText(title)
+            }
             pruneScreenshots(dir)
-            logFramework("自用模块: 已保存拦截截图 $name")
+            logFramework("自用模块: 已保存拦截截图 $base（标题=${title ?: "无"}）")
         } catch (t: Throwable) {
             logFramework("自用模块: 截图失败：${describe(t)}")
         }
@@ -436,43 +920,6 @@ class MainHook : IXposedHookLoadPackage {
                 .edit().clear().commit()
             logFramework("自用模块: 弹窗规则已清除")
         } catch (_: Throwable) {
-        }
-    }
-
-    private fun showConfirmCard(
-        context: android.content.Context,
-        pkg: String,
-        source: android.app.Dialog,
-        title: String?
-    ) {
-        showingConfirm = true
-        logFramework("自用模块: 准备显示确认卡 title=$title")
-        try {
-            val message = if (title.isNullOrBlank()) {
-                "检测到一个弹窗，要拦截它吗？"
-            } else {
-                "检测到弹窗：\n「$title」\n\n要拦截它吗？"
-            }
-            android.app.AlertDialog.Builder(context)
-                .setTitle("自用模块")
-                .setMessage(message)
-                .setPositiveButton("全部拦截") { _, _ ->
-                    saveBlockRules(context, "block", null)
-                    dismissAllShown()
-                }
-                .setNeutralButton("只拦这个") { _, _ ->
-                    saveBlockRules(context, "titles", title)
-                    dismissAllShown()
-                }
-                .setNegativeButton("不拦") { _, _ ->
-                    saveBlockRules(context, "allow", null)
-                }
-                .setOnDismissListener { showingConfirm = false }
-                .show()
-            logFramework("自用模块: 确认卡已显示")
-        } catch (t: Throwable) {
-            logFramework("自用模块: 确认卡显示失败：${describe(t)}")
-            showingConfirm = false
         }
     }
 
@@ -723,6 +1170,28 @@ class MainHook : IXposedHookLoadPackage {
         /** 拦截截图存放目录（目标应用自己的 files 下）与保留数量。 */
         private const val SHOT_DIR = "blocked"
         private const val MAX_SHOTS = 20
+
+        /** 同一弹窗内容在这个时间窗内重复出现时不再重复截图。 */
+        private const val SHOT_DEDUP_MS = 5_000L
+
+        /** 悬浮球的标记，避免重复挂到同一个窗口。 */
+        private const val BALL_TAG = "selfxposed_pick_ball"
+
+        /** 拾取描边的标记。 */
+        private const val HIGHLIGHT_TAG = "selfxposed_pick_highlight"
+
+        /** 用户长按关闭悬浮球后写的标记文件。 */
+        private const val BALL_OFF_FILE = "selfxposed_ball_off"
+
+        /** 拦截方式配置：ball（悬浮球）/ auto（自动询问）。 */
+        private const val PICK_MODE_FILE = "selfxposed_pick_mode.conf"
+        private const val PICK_MODE_BALL = "ball"
+        private const val PICK_MODE_AUTO = "auto"
+
+        @Volatile
+        private var lastShotHash = 0
+        @Volatile
+        private var lastShotAt = 0L
 
         /** 正在显示我们自己的确认卡时，跳过守卫，避免递归。 */
         @Volatile

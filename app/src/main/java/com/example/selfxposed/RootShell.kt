@@ -38,6 +38,12 @@ object RootShell {
 
     private fun quoted(command: String) = "'" + command.replace("'", "'\\''") + "'"
 
+    /** shell 报错被当成输出（例如找不到 su）时，视为失败。 */
+    private fun isToolError(output: String): Boolean =
+        output.startsWith("/system/bin/sh:") ||
+            output.contains("inaccessible or not found") ||
+            output.contains("Permission denied") && output.length < 120
+
     /** 直接调用 su（不经 Shizuku）。 */
     private fun execDirect(command: String, timeoutMs: Long): String {
         val attempts = mutableListOf(
@@ -51,7 +57,7 @@ object RootShell {
                 val process = ProcessBuilder(argv).redirectErrorStream(true).start()
                 val output = process.inputStream.bufferedReader().use { it.readText() }
                 val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
-                if (finished && output.isNotBlank()) {
+                if (finished && output.isNotBlank() && !isToolError(output)) {
                     android.util.Log.i("SelfXposedRoot", "direct(${argv[0]}) out=${output.take(100).replace('\n', ' ')}")
                     return output
                 }

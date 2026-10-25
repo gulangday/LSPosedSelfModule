@@ -9,16 +9,13 @@ import android.widget.LinearLayout
 class LogsScreen(
     private val host: ScreenHost,
     private val pkg: String,
-    private val name: String,
-    private val backPage: String
+    private val name: String
 ) {
     private val ui get() = host.ui
     private val repo get() = host.repo
 
     fun render(into: LinearLayout) {
-        into.addView(ui.backRow("‹  返回") {
-            if (backPage == PAGE_APP) host.openApp(pkg, name) else host.openSettings()
-        })
+        into.addView(ui.backRow("‹  返回") { host.backFromLogs() })
         into.addView(ui.sectionTitle("$name · 日志"))
 
         val raw = repo.logs(pkg)

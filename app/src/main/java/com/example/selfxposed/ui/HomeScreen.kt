@@ -55,6 +55,11 @@ class HomeScreen(private val host: ScreenHost) {
         } else {
             entries.forEach { into.addView(appCard(it)) }
         }
+
+        // 后台补读 root 侧的 Hook 状态（不卡启动），有变化再刷新页面
+        repo.refreshHookStatuses(entries.map { it.pkg }) {
+            ui.activity.runOnUiThread { host.refresh() }
+        }
     }
 
     private fun heroCard(): View = ui.card(Palette.hero).apply {

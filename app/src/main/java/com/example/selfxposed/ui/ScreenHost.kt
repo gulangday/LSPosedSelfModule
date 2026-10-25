@@ -20,6 +20,7 @@ interface ScreenHost {
     fun openHintStyle(pkg: String?, name: String?)
     fun openKeywords(pkg: String, name: String)
     fun openLogs(pkg: String, name: String)
+    fun backFromLogs()
     fun openHelp()
     fun openPicker()
 
