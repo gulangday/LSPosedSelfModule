@@ -32,7 +32,7 @@ class SettingsScreen(private val host: ScreenHost) {
             }
         }
         into.addView(ui.card().apply { addView(keepAliveSwitch) })
-        into.addView(ui.hint("目标应用读取配置时，如果模块进程已被系统杀掉，需要「自启动」权限才能被唤醒。建议同时开启后台常驻。"))
+        into.addView(ui.hint("目标应用读配置时会唤醒本模块，被系统杀掉后需要「自启动」权限。后台常驻为可选项（默认关闭），能提高唤醒成功率，但会常驻一条通知。"))
         into.addView(ui.actionCard("打开自启动设置", "允许系统在需要时启动本模块") { openAutoStartSettings() })
 
         into.addView(ui.sectionTitle("其他"))
