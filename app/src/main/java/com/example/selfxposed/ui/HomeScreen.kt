@@ -118,9 +118,13 @@ class HomeScreen(private val host: ScreenHost) {
             }
 
         details.addView(
-            clickableText(entry.label, 15, if (entry.installed) Palette.ink else Palette.muted, true, 0)
+            clickableText(entry.label, 15, if (entry.installed) Palette.ink else Palette.muted, true, 0),
+            LinearLayout.LayoutParams(-2, -2)
         )
-        details.addView(clickableText(entry.pkg, 10, Palette.muted, false, 2))
+        details.addView(
+            clickableText(entry.pkg, 10, Palette.muted, false, 2),
+            LinearLayout.LayoutParams(-2, -2)
+        )
         details.addView(ui.label("版本：${entry.version ?: "未安装"}", 10, Palette.muted, false))
 
         val (chipText, chipColor, chipBackground) = when {

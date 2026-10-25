@@ -2,6 +2,7 @@ package com.example.selfxposed
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -157,6 +158,7 @@ class MainHook : IXposedHookLoadPackage {
             return try {
                 val merged = ConfigClient.merge(JSONObject(raw))
                 logFramework("自用模块: $pkg 配置来自模块偏好文件")
+                saveLocalCache(activity, pkg, merged)
                 LoadedConfig(merged, "file")
             } catch (t: Throwable) {
                 logFramework("自用模块: 配置解析失败，$pkg：${describe(t)}")
@@ -164,14 +166,40 @@ class MainHook : IXposedHookLoadPackage {
             }
         }
 
-        return try {
+        // 2. ContentProvider（能读到就用最新的，并刷新本地缓存）
+        try {
             val cfg = ConfigClient.config(activity.contentResolver, pkg)
             logFramework("自用模块: $pkg 配置来自 Provider")
-            LoadedConfig(cfg, "provider")
+            saveLocalCache(activity, pkg, cfg)
+            return LoadedConfig(cfg, "provider")
         } catch (t: Throwable) {
             logFramework("自用模块: Provider 读取配置失败，$pkg：${describe(t)}")
-            null
         }
+
+        // 3. 兜底：目标应用自己的 SharedPreferences（持久化，重启后仍有效）。
+        //    模块进程被划掉/未授权自启动时，仍能用上一次同步到的配置弹窗。
+        val cached = loadLocalCache(activity, pkg)
+        if (cached != null) {
+            logFramework("自用模块: $pkg 配置来自本地缓存")
+            return LoadedConfig(cached, "cache")
+        }
+        return null
+    }
+
+    private fun saveLocalCache(activity: Activity, pkg: String, cfg: JSONObject) {
+        try {
+            activity.getSharedPreferences(CACHE_PREFS, Context.MODE_PRIVATE)
+                .edit().putString("config:$pkg", cfg.toString()).commit()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun loadLocalCache(activity: Activity, pkg: String): JSONObject? = try {
+        val raw = activity.getSharedPreferences(CACHE_PREFS, Context.MODE_PRIVATE)
+            .getString("config:$pkg", null)
+        if (raw.isNullOrBlank()) null else ConfigClient.merge(JSONObject(raw))
+    } catch (_: Throwable) {
+        null
     }
 
     private fun logOnce(registry: MutableSet<String>, pkg: String, block: () -> Unit) {
@@ -206,6 +234,8 @@ class MainHook : IXposedHookLoadPackage {
 
     companion object {
         private const val SETTLE_DELAY_MS = 400L
+        /** 配置缓存在目标应用自己的 SharedPreferences 里，模块进程不可用时兜底。 */
+        private const val CACHE_PREFS = "selfxposed_cache"
         private val TRANSIENT_HINTS =
             listOf("splash", "welcome", "guide", "loading", "launch", "advert", "startup")
 
