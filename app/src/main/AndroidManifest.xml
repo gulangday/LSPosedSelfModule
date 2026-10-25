@@ -3,6 +3,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Shizuku：借 shell 身份执行 su，绕开隐藏 root 模块对普通应用的限制。 -->
+    <uses-permission android:name="moe.shizuku.privileged.api.permission.API_V23" />
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -24,6 +26,13 @@
             android:enabled="true"
             android:exported="true"
             android:grantUriPermissions="false" />
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <service
             android:name=".KeepAliveService"
             android:exported="false"

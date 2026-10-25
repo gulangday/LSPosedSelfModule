@@ -89,6 +89,7 @@ class AppSettingsScreen(
             cfg.put("fadeMs", fadeMs)
             repo.saveConfig(pkg, cfg)
             repo.log(pkg, "设置已保存：显示 ${showMs}ms，淡出 ${fadeMs}ms")
+            host.toast("已保存")
         })
 
         into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })

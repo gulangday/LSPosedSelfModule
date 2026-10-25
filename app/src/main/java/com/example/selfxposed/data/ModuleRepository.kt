@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import com.example.selfxposed.ConfigClient
+import com.example.selfxposed.RootShell
 import org.json.JSONObject
 import java.text.Collator
 import java.util.Locale
@@ -47,8 +48,6 @@ class ModuleRepository(private val activity: Activity) {
         }
     }
 
-    fun hookDetected(pkg: String): Boolean = ConfigClient.hookDetected(resolver, pkg)
-
     fun targets(): List<String> = try {
         ConfigClient.targets(resolver)
     } catch (_: Throwable) {
@@ -57,6 +56,32 @@ class ModuleRepository(private val activity: Activity) {
 
     fun addTarget(pkg: String) {
         ConfigClient.addTarget(resolver, pkg)
+    }
+
+    /**
+     * Hook 是否在该应用里跑过。
+     *
+     * 正常情况模块能收到握手记录；但 targetSdk 30+ 的应用受包可见性限制，
+     * 根本调不到模块的 Provider，只能由 hook 在应用本地写一个运行标记，
+     * 模块再用 root 去读。
+     */
+    fun hookDetected(pkg: String): Boolean {
+        if (ConfigClient.hookDetected(resolver, pkg)) return true
+        return hookSeenViaRoot(pkg)
+    }
+
+    private fun hookSeenViaRoot(pkg: String): Boolean = try {
+        val info = pm.getPackageInfo(pkg, 0)
+        if ((info.applicationInfo?.targetSdkVersion ?: 0) < 30) {
+            false
+        } else if (!RootShell.hasRootCached()) {
+            false
+        } else {
+            val out = RootShell.exec("cat /data/data/$pkg/files/selfxposed_seen 2>/dev/null")
+            (out.trim().toLongOrNull() ?: 0L) > 0L
+        }
+    } catch (_: Throwable) {
+        false
     }
 
     fun removeTarget(pkg: String) {

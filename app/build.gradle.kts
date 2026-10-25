@@ -13,6 +13,7 @@ android {
         versionName = "2.2.0-beta1"
     }
     buildTypes { release { isMinifyEnabled = false } }
+    buildFeatures { aidl = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
@@ -21,4 +22,6 @@ android {
 }
 dependencies {
     compileOnly("de.robv.android.xposed:api:82")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

@@ -51,10 +51,21 @@ class MainHook : IXposedHookLoadPackage {
         } catch (t: Throwable) {
             logFramework("自用模块: 在 $pkg 安装 Hook 失败：${describe(t)}")
         }
+
+        // 通用弹窗守卫：不依赖配置，第一次弹窗询问、之后按规则执行。
+        installDialogGuard(pkg, lpparam.classLoader)
     }
 
     private fun onActivityResumed(activity: Activity, pkg: String) {
         val resolver = activity.contentResolver
+
+        // 0. 本地运行标记：targetSdk 高的应用无法回报状态（包可见性），
+        //    模块 UI 有 root 时读这个文件判断"Hook 是否跑过"。
+        try {
+            java.io.File(activity.filesDir, "selfxposed_seen")
+                .writeText(System.currentTimeMillis().toString())
+        } catch (_: Throwable) {
+        }
 
         // 1. 记录一次运行时握手，供模块首页显示“已连接”。
         try {
@@ -69,6 +80,9 @@ class MainHook : IXposedHookLoadPackage {
             return
         }
         val cfg = loaded.cfg
+
+        // 去更新：每个进程只安装一次（版本伪装 / 更新弹窗拦截）。
+        if (updateHooked.add(pkg)) installUpdateBlockHooks(activity, pkg, cfg)
 
         if (!cfg.optBoolean("enabled", false)) {
             logOnce(disabledLogged, pkg) { writeLog(activity, pkg, "Hook 已触发，但模块开关处于关闭状态") }
@@ -131,6 +145,389 @@ class MainHook : IXposedHookLoadPackage {
         pendingHandler.postDelayed(runnable, SETTLE_DELAY_MS)
     }
 
+    /**
+     * 去更新：版本号伪装 + 更新弹窗拦截。
+     * 版本伪装只影响「查询本应用包」的返回值，不改系统里真实的包信息。
+     */
+    private fun installUpdateBlockHooks(activity: Activity, pkg: String, cfg: JSONObject) {
+        val block = cfg.optJSONObject("updateBlock") ?: return
+        if (!block.optBoolean("enabled", false)) return
+
+        val fakeName = block.optString("fakeVersionName", "").trim()
+        val fakeCode = block.optInt("fakeVersionCode", 0)
+        val loader = activity.javaClass.classLoader
+
+        if (fakeName.isNotEmpty() || fakeCode > 0) {
+            val versionHook = object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    try {
+                        val queried = param.args.firstOrNull() as? String ?: return
+                        if (queried != pkg) return
+                        val info = param.result as? android.content.pm.PackageInfo ?: return
+                        if (fakeName.isNotEmpty()) info.versionName = fakeName
+                        if (fakeCode > 0) {
+                            @Suppress("DEPRECATION")
+                            info.versionCode = fakeCode
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            try {
+                XposedHelpers.findAndHookMethod(
+                    "android.app.ApplicationPackageManager",
+                    loader,
+                    "getPackageInfo",
+                    String::class.java,
+                    Int::class.javaPrimitiveType,
+                    versionHook
+                )
+                logFramework("自用模块: $pkg 版本伪装已安装 $fakeName($fakeCode)")
+            } catch (t: Throwable) {
+                logFramework("自用模块: $pkg 版本伪装安装失败：${describe(t)}")
+            }
+        }
+
+        if (block.optBoolean("blockDialog", true)) {
+            logFramework("自用模块: $pkg 弹窗拦截交给通用规则处理")
+        }
+    }
+
+    /**
+     * 通用弹窗守门员：不需要跨进程配置。
+     *
+     * 规则存在目标应用自己的 SharedPreferences 里（hook 有写权限），所以
+     * targetSdk 35 的应用也能用。第一次遇到弹窗只询问、不拦截；用户选择后写入规则。
+     */
+    private fun installDialogGuard(pkg: String, loader: ClassLoader?) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                android.app.Dialog::class.java,
+                "show",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val dialog = param.thisObject as? android.app.Dialog ?: return
+                        if (showingConfirm) return
+                        try {
+                            val context = dialog.context ?: return
+                            if (loadBlockRules(context).mode == "block") {
+                                param.result = null
+                                logFramework("自用模块: 已拦截弹窗（规则=全部拦截）")
+                                showBlockedHint(context, pkg)
+                            }
+                        } catch (t: Throwable) {
+                            logFramework("自用模块: 拦截判断异常：${describe(t)}")
+                        }
+                    }
+
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val dialog = param.thisObject as? android.app.Dialog ?: return
+                        if (showingConfirm) return
+                        try {
+                            val context = dialog.context ?: return
+                            if (loadBlockRules(context).mode in setOf("allow", "block")) return
+                            // show() 之后布局才完成，延迟一点再读标题、再决定是否询问。
+                            dialog.window?.decorView?.postDelayed({
+                                try {
+                                    evaluateShownDialog(pkg, dialog)
+                                } catch (_: Throwable) {
+                                }
+                            }, 150)
+                        } catch (t: Throwable) {
+                            logFramework("自用模块: 弹窗观察异常：${describe(t)}")
+                        }
+                    }
+                }
+            )
+            logFramework("自用模块: $pkg 通用弹窗守卫已安装")
+        } catch (t: Throwable) {
+            logFramework("自用模块: $pkg 通用弹窗守卫安装失败：${describe(t)}")
+        }
+    }
+
+    /** 弹窗已经显示后再处理：读标题、按规则/关键字拦或询问。 */
+    private fun evaluateShownDialog(pkg: String, dialog: android.app.Dialog) {
+        if (showingConfirm) return
+        synchronized(shownDialogs) {
+            shownDialogs.add(java.lang.ref.WeakReference(dialog))
+        }
+        attachLongPress(dialog, pkg)
+        val context = dialog.context ?: return
+        val rules = loadBlockRules(context)
+
+        val texts = ArrayList<String>()
+        try {
+            dialog.window?.decorView?.let { collectTexts(it, texts, 0) }
+        } catch (_: Throwable) {
+        }
+        val joined = texts.joinToString(" ")
+        val title = texts.firstOrNull { it.length in 1..60 }
+
+        // 1. 自定义关键字（命中标题或任意文本就拦）
+        val keywords = com.example.selfxposed.Keywords.load(context)
+        if (keywords.isNotEmpty() && keywords.any { it.isNotBlank() && joined.contains(it, ignoreCase = true) }) {
+            dialog.dismissQuietly()
+            logFramework("自用模块: 关键字命中，已拦截弹窗")
+            showBlockedHint(context, pkg)
+            return
+        }
+
+        // 2. 已学习的规则（只拦指定标题）
+        if (rules.mode == "titles" && title != null &&
+            rules.titles.any { it.isNotBlank() && (title.contains(it) || it.contains(title)) }
+        ) {
+            dialog.dismissQuietly()
+            logFramework("自用模块: 已关闭弹窗「$title」（规则=只拦这个）")
+            showBlockedHint(context, pkg)
+            return
+        }
+
+        if (rules.mode.isNotEmpty()) return
+        if (!askedThisProcess.add(pkg)) return
+        showConfirmCard(context, pkg, dialog, title)
+    }
+
+    /** 样式优先级：目标应用本地（自定义，root 写入）→ 模块配置（预设，低 targetSdk 免 root）→ 默认。 */
+    private fun resolveHintStyle(context: android.content.Context): com.example.selfxposed.HintStyle {
+        com.example.selfxposed.HintStyle.fromFile(context)?.let { return it }
+        return try {
+            val raw = ConfigClient.hintStyle(context.contentResolver)
+            com.example.selfxposed.HintStyle.fromJson(
+                if (raw.isNullOrBlank()) null else org.json.JSONObject(raw)
+            ) ?: com.example.selfxposed.HintStyle.DEFAULT
+        } catch (_: Throwable) {
+            com.example.selfxposed.HintStyle.DEFAULT
+        }
+    }
+
+    /** 拦截后给一个可长按的小提示条，避免"被拦了就再也改不了规则"。 */
+    private fun showBlockedHint(context: android.content.Context, pkg: String) {
+        try {
+            val style = resolveHintStyle(context)
+            val density = context.resources.displayMetrics.density
+            fun dp(value: Int) = (value * density + 0.5f).toInt()
+            val bgColor = try {
+                android.graphics.Color.parseColor(style.bgColor)
+            } catch (_: Throwable) {
+                android.graphics.Color.argb(215, 28, 27, 31)
+            }
+            val dialog = android.app.Dialog(context, android.R.style.Theme_Translucent_NoTitleBar)
+            val text = android.widget.TextView(context).apply {
+                this.text = "已拦截弹窗 · 长按改规则"
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = style.sizeSp.toFloat()
+                setPadding(dp(14), dp(7), dp(14), dp(7))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(bgColor)
+                    cornerRadius = dp(16).toFloat()
+                }
+                isLongClickable = true
+                setOnLongClickListener {
+                    dialog.dismissQuietly()
+                    showRuleMenu(context, pkg)
+                    true
+                }
+            }
+            val gravity = when (style.position) {
+                "top" -> android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
+                "center" -> android.view.Gravity.CENTER
+                else -> android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL
+            }
+            // 窗口只包住提示条本身，并标记 NOT_TOUCH_MODAL：
+            // 这样只有提示条这一小块能吃触摸，屏幕其它区域的点击照常传给游戏。
+            dialog.setContentView(text)
+            dialog.window?.let { window ->
+                window.setBackgroundDrawable(
+                    android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
+                )
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                window.setDimAmount(0f)
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+                window.setGravity(gravity)
+            }
+            showingConfirm = true
+            dialog.show()
+            showingConfirm = false
+            dialog.window?.let { window ->
+                window.setLayout(-2, -2)
+                window.setGravity(gravity)
+                val params = window.attributes
+                if (style.position != "center") params.y = dp(style.offsetDp)
+                window.attributes = params
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                dialog.dismissQuietly()
+            }, 4000)
+        } catch (_: Throwable) {
+            showingConfirm = false
+        }
+    }
+
+    /** 长按弹窗任意位置 → 规则菜单（不依赖 root，随时改）。 */
+    private fun attachLongPress(dialog: android.app.Dialog, pkg: String) {
+        try {
+            val decor = dialog.window?.decorView ?: return
+            decor.isLongClickable = true
+            decor.setOnLongClickListener {
+                showRuleMenu(dialog.context, pkg)
+                true
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun showRuleMenu(context: android.content.Context, pkg: String) {
+        showingConfirm = true
+        try {
+            android.app.AlertDialog.Builder(context)
+                .setTitle("自用模块 · 弹窗规则")
+                .setItems(arrayOf("全部拦截", "不拦截", "清除规则")) { _, which ->
+                    showingConfirm = false
+                    when (which) {
+                        0 -> {
+                            saveBlockRules(context, "block", null)
+                            dismissAllShown()
+                        }
+
+                        1 -> saveBlockRules(context, "allow", null)
+                        2 -> clearBlockRules(context)
+                    }
+                }
+                .setNegativeButton("关闭") { _, _ -> showingConfirm = false }
+                .setOnDismissListener { showingConfirm = false }
+                .show()
+        } catch (_: Throwable) {
+            showingConfirm = false
+        }
+    }
+
+    private fun clearBlockRules(context: android.content.Context) {
+        try {
+            context.getSharedPreferences(RULES_PREFS, android.content.Context.MODE_PRIVATE)
+                .edit().clear().commit()
+            logFramework("自用模块: 弹窗规则已清除")
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun showConfirmCard(
+        context: android.content.Context,
+        pkg: String,
+        source: android.app.Dialog,
+        title: String?
+    ) {
+        showingConfirm = true
+        logFramework("自用模块: 准备显示确认卡 title=$title")
+        try {
+            val message = if (title.isNullOrBlank()) {
+                "检测到一个弹窗，要拦截它吗？"
+            } else {
+                "检测到弹窗：\n「$title」\n\n要拦截它吗？"
+            }
+            android.app.AlertDialog.Builder(context)
+                .setTitle("自用模块")
+                .setMessage(message)
+                .setPositiveButton("全部拦截") { _, _ ->
+                    saveBlockRules(context, "block", null)
+                    dismissAllShown()
+                }
+                .setNeutralButton("只拦这个") { _, _ ->
+                    saveBlockRules(context, "titles", title)
+                    dismissAllShown()
+                }
+                .setNegativeButton("不拦") { _, _ ->
+                    saveBlockRules(context, "allow", null)
+                }
+                .setOnDismissListener { showingConfirm = false }
+                .show()
+            logFramework("自用模块: 确认卡已显示")
+        } catch (t: Throwable) {
+            logFramework("自用模块: 确认卡显示失败：${describe(t)}")
+            showingConfirm = false
+        }
+    }
+
+    /** 关掉当前屏幕上所有已被我们观察到、且仍在显示的弹窗。 */
+    private fun dismissAllShown() {
+        synchronized(shownDialogs) {
+            shownDialogs.forEach { ref ->
+                try {
+                    ref.get()?.dismissQuietly()
+                } catch (_: Throwable) {
+                }
+            }
+            shownDialogs.clear()
+        }
+    }
+
+    private fun android.app.Dialog.dismissQuietly() {
+        try {
+            if (isShowing) dismiss()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private data class BlockRules(val mode: String, val titles: Set<String>)
+
+    private fun loadBlockRules(context: android.content.Context): BlockRules {
+        val prefs = context.getSharedPreferences(RULES_PREFS, android.content.Context.MODE_PRIVATE)
+        @Suppress("DEPRECATION")
+        val titles = prefs.getStringSet(KEY_TITLES, null) ?: emptySet()
+        return BlockRules(prefs.getString(KEY_MODE, "") ?: "", titles)
+    }
+
+    private fun saveBlockRules(context: android.content.Context, mode: String, title: String?) {
+        val prefs = context.getSharedPreferences(RULES_PREFS, android.content.Context.MODE_PRIVATE)
+        val editor = prefs.edit().putString(KEY_MODE, mode)
+        if (mode == "titles" && !title.isNullOrBlank()) {
+            @Suppress("DEPRECATION")
+            val titles = HashSet(prefs.getStringSet(KEY_TITLES, null) ?: emptySet())
+            titles.add(title)
+            editor.putStringSet(KEY_TITLES, titles)
+        }
+        editor.commit()
+        logFramework("自用模块: 弹窗规则已保存 mode=$mode title=$title")
+    }
+
+    private fun extractTitle(dialog: android.app.Dialog): String? {
+        val decor = try {
+            dialog.window?.decorView
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+        val texts = ArrayList<String>()
+        collectTexts(decor, texts, 0)
+        return texts.firstOrNull { it.length in 1..60 }
+    }
+
+    private fun isUpdateDialog(dialog: android.app.Dialog): Boolean {
+        val decor = try {
+            dialog.window?.decorView
+        } catch (_: Throwable) {
+            null
+        } ?: return false
+        val texts = ArrayList<String>()
+        collectTexts(decor, texts, 0)
+        if (texts.isEmpty()) return false
+        val joined = texts.joinToString(" ")
+        if (joined.length > 160) return false
+        return UPDATE_KEYWORDS.any { joined.contains(it, ignoreCase = true) }
+    }
+
+    private fun collectTexts(view: android.view.View, out: MutableList<String>, depth: Int) {
+        if (depth > 12) return
+        if (view is android.widget.TextView) {
+            val text = view.text?.toString()?.trim()
+            if (!text.isNullOrEmpty()) out.add(text)
+        }
+        if (view is android.view.ViewGroup) {
+            for (i in 0 until view.childCount) {
+                collectTexts(view.getChildAt(i), out, depth + 1)
+            }
+        }
+    }
+
     private fun isTransientActivity(activity: Activity): Boolean {
         val name = activity.javaClass.simpleName.lowercase(Locale.ROOT)
         return TRANSIENT_HINTS.any { name.contains(it) }
@@ -144,22 +541,29 @@ class MainHook : IXposedHookLoadPackage {
      * 直读不可用（例如极旧的 LSPosed）时再退回 ContentProvider。
      */
     private fun readConfig(activity: Activity, pkg: String): LoadedConfig? {
-        // 每次重新构造实例：如果进程启动早期文件服务还没就绪，
-        // 第一次读到的会是空表，缓存下来就永远读不到了。
+        // 0. 首选：通过 LSPosed 文件服务直读模块 prefs 文件。
+        //    不受 targetSdk 35 的包可见性限制（那种情况下 ContentResolver 会报 Unknown authority）。
+        readModulePrefsFile(pkg)?.let { cfg ->
+            logFramework("自用模块: $pkg 配置来自模块文件直读")
+            saveLocalCache(activity, pkg, cfg)
+            return LoadedConfig(cfg, "file")
+        }
+
+        // 1. XSharedPreferences（部分 LSPosed 版本可用）
         val raw = try {
             XSharedPreferences(ConfigClient.MODULE_PACKAGE, ConfigClient.PREFS_NAME)
                 .getString(ConfigClient.keyConfig(pkg), null)
         } catch (t: Throwable) {
-            logFramework("自用模块: 直读配置失败，$pkg：${describe(t)}")
+            logFramework("自用模块: XSharedPreferences 读取失败，$pkg：${describe(t)}")
             null
         }
 
         if (!raw.isNullOrBlank()) {
             return try {
                 val merged = ConfigClient.merge(JSONObject(raw))
-                logFramework("自用模块: $pkg 配置来自模块偏好文件")
+                logFramework("自用模块: $pkg 配置来自 XSharedPreferences")
                 saveLocalCache(activity, pkg, merged)
-                LoadedConfig(merged, "file")
+                LoadedConfig(merged, "xsp")
             } catch (t: Throwable) {
                 logFramework("自用模块: 配置解析失败，$pkg：${describe(t)}")
                 null
@@ -184,6 +588,41 @@ class MainHook : IXposedHookLoadPackage {
             return LoadedConfig(cached, "cache")
         }
         return null
+    }
+
+    /**
+     * 直接读模块的 SharedPreferences XML（走 LSPosed 守护进程的文件服务）。
+     * 这是 targetSdk 35 应用唯一能拿到配置的路径：它们看不到模块的 ContentProvider。
+     */
+    private fun readModulePrefsFile(pkg: String): JSONObject? = try {
+        val path = "/data/data/${ConfigClient.MODULE_PACKAGE}/shared_prefs/${ConfigClient.PREFS_NAME}.xml"
+        val service = de.robv.android.xposed.SELinuxHelper.getAppDataFileService()
+        val stream = service.getFileInputStream(path, 0, 0).stream
+        if (stream == null) {
+            logFramework("自用模块: 文件服务返回空流（$pkg）")
+            null
+        } else {
+            val text = stream.bufferedReader().use { it.readText() }
+            val pattern = Regex(
+                "<string name=\"app:${Regex.escape(pkg)}\">(.*?)</string>",
+                RegexOption.DOT_MATCHES_ALL
+            )
+            val raw = pattern.find(text)?.groupValues?.get(1)
+            if (raw.isNullOrBlank()) {
+                logFramework("自用模块: 模块文件里没有 $pkg 的配置")
+                null
+            } else {
+                val json = raw
+                    .replace("&quot;", "\"")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+                ConfigClient.merge(JSONObject(json))
+            }
+        }
+    } catch (t: Throwable) {
+        logFramework("自用模块: 直读模块文件失败（$pkg）：${describe(t)}")
+        null
     }
 
     private fun saveLocalCache(activity: Activity, pkg: String, cfg: JSONObject) {
@@ -245,6 +684,27 @@ class MainHook : IXposedHookLoadPackage {
         private val failedLogged = ConcurrentHashMap.newKeySet<String>()
         private val lastShownAt = ConcurrentHashMap<String, Long>()
         private val pendingShows = ConcurrentHashMap<String, Runnable>()
+        private val updateHooked = ConcurrentHashMap.newKeySet<String>()
+        private val askedThisProcess = ConcurrentHashMap.newKeySet<String>()
+
+        /** 弹窗规则的存储位置（写在目标应用自己身上，避免跨进程限制）。 */
+        private const val RULES_PREFS = "selfxposed_block"
+        private const val KEY_MODE = "mode"
+        private const val KEY_TITLES = "titles"
+
+        /** 正在显示我们自己的确认卡时，跳过守卫，避免递归。 */
+        @Volatile
+        private var showingConfirm = false
+
+        /** 观察到的、可能仍在显示的弹窗（弱引用，不阻止回收）。 */
+        private val shownDialogs =
+            java.util.Collections.synchronizedList(ArrayList<java.lang.ref.WeakReference<android.app.Dialog>>())
+
+        /** 更新弹窗的识别关键词：命中任意一个就拦截。 */
+        private val UPDATE_KEYWORDS = listOf(
+            "发现新版本", "立即更新", "马上更新", "立即升级", "升级到",
+            "新版本可用", "版本更新", "update available"
+        )
 
         // 注意：不能在类初始化时 new Handler —— LSPosed 加载模块时主线程 Looper 可能还没就绪。
         private val pendingHandler: Handler by lazy { Handler(Looper.getMainLooper()) }

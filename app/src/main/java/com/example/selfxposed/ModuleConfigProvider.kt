@@ -115,7 +115,22 @@ class ModuleConfigProvider : ContentProvider() {
                     .apply()
                 out.putBoolean("ok", true)
             }
+
+            ConfigClient.M_GET_HINT_STYLE -> {
+                out.putString(
+                    ConfigClient.K_HINT_STYLE,
+                    prefs.getString(KEY_HINT_STYLE, "") ?: ""
+                )
+            }
+
+            ConfigClient.M_SET_HINT_STYLE -> {
+                val raw = extras?.getString(ConfigClient.K_HINT_STYLE)?.take(MAX_CONFIG_CHARS) ?: return out
+                prefs.edit().putString(KEY_HINT_STYLE, raw).apply()
+                out.putBoolean("ok", true)
+            }
         }
+        // 让 LSPosed 的文件服务能读到这份配置（targetSdk 35 的应用只能走文件）。
+        PrefsPermission.makeWorldReadable(ctx)
         return out
     }
 
@@ -159,6 +174,7 @@ class ModuleConfigProvider : ContentProvider() {
     companion object {
         private const val PREFS_NAME = "module_config"
         private const val KEY_TARGETS = "targets"
+        private const val KEY_HINT_STYLE = "hint_style"
         private const val MAX_CONFIG_CHARS = 16 * 1024
         private const val MAX_LINE_CHARS = 600
         private const val MAX_LOG_LINES = 300

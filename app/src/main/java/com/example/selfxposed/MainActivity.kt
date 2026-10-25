@@ -1,6 +1,7 @@
 package com.example.selfxposed
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -26,6 +27,10 @@ import com.example.selfxposed.ui.PickerScreen
 import com.example.selfxposed.ui.ScreenHost
 import com.example.selfxposed.ui.SettingsScreen
 import com.example.selfxposed.ui.Ui
+import com.example.selfxposed.ui.UpdateBlockScreen
+import com.example.selfxposed.ui.DialogRulesScreen
+import com.example.selfxposed.ui.HintStyleScreen
+import com.example.selfxposed.ui.KeywordScreen
 
 /**
  * 只负责外壳与导航：顶部标题、内容容器、底部两个导航项、系统返回键。
@@ -62,6 +67,14 @@ class MainActivity : Activity(), ScreenHost {
         buildShell()
         renderPage(PAGE_HOME, animate = false)
 
+        // Shizuku 已授权时绑定远程服务，后续 root 命令优先走它
+        if (ShizukuBridge.hasPermission()) {
+            ShizukuBridge.bind(android.content.ComponentName(this, RemoteService::class.java))
+        }
+
+        // 调试入口：--es page settings|features|permissions|about|help，直接打开指定页面。
+        applyPageExtra(intent)
+
         // 调试/自动化入口：--ez keep_alive true 等价于在设置里打开「后台常驻」。
         intent?.takeIf { it.hasExtra(EXTRA_KEEP_ALIVE) }?.let {
             val enabled = it.getBooleanExtra(EXTRA_KEEP_ALIVE, false)
@@ -70,7 +83,11 @@ class MainActivity : Activity(), ScreenHost {
 
         // 打开模块时确保常驻服务在运行（开机后也由 BootReceiver 负责拉起）。
         if (KeepAlive.isEnabled(this)) KeepAliveService.start(this)
+        PrefsPermission.makeWorldReadable(this)
         if (intent?.getBooleanExtra(EXTRA_PREVIEW_POPUP, false) == true) showDebugPreview()
+
+        // 首次启动必须先选工作模式，否则进不来。
+        if (WorkMode.get(this) == null) askWorkMode()
 
         // Android 13+ 使用 OnBackInvokedDispatcher；目标 SDK 仍较低时系统走 onBackPressed。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -89,6 +106,89 @@ class MainActivity : Activity(), ScreenHost {
         if (::content.isInitialized && currentPage == PAGE_HOME) {
             renderPage(PAGE_HOME, animate = false)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyPageExtra(intent)
+    }
+
+    private fun applyPageExtra(from: Intent?) {
+        val page = from?.getStringExtra(EXTRA_PAGE) ?: return
+        val target = when (page) {
+            "features" -> PAGE_FEATURES
+            "update_block" -> {
+                val first = repo.targets().firstOrNull()
+                if (first != null) {
+                    selectedPackage = first
+                    selectedName = repo.label(first)
+                }
+                PAGE_UPDATE_BLOCK
+            }
+            "settings" -> PAGE_SETTINGS
+            "dialog_rules" -> PAGE_DIALOG_RULES
+            "hint_style" -> PAGE_HINT_STYLE
+            "keywords" -> PAGE_KEYWORDS
+            "permissions" -> PAGE_PERMISSIONS
+            "about" -> PAGE_ABOUT
+            "help" -> PAGE_HELP
+            else -> PAGE_HOME
+        }
+        if (target != currentPage) renderPage(target, animate = false)
+    }
+
+    /** 首次启动的工作模式选择：不可取消、点外部不关闭。 */
+    private fun askWorkMode() {
+        ui.listDialog(
+            title = "选择工作模式",
+            items = listOf(
+                "Root 模式：直接请求 root（可能被隐藏 root 的模块挡住）",
+                "Shizuku 模式：通过 Shizuku 执行命令，适合隐藏 root 的设备",
+                "非 Root 模式：不需要任何权限，root 相关功能不可用"
+            ),
+            showCancel = false,
+            onPick = { which ->
+                when (which) {
+                    0 -> {
+                        Thread {
+                            val granted = RootShell.hasRoot()
+                            runOnUiThread {
+                                if (granted) {
+                                    WorkMode.set(this, WorkMode.ROOT)
+                                    renderPage(currentPage, animate = false)
+                                } else {
+                                    toast("未获得 root 权限，可改用 Shizuku 或非 Root 模式")
+                                    askWorkMode()
+                                }
+                            }
+                        }.start()
+                    }
+
+                    1 -> {
+                        if (!ShizukuBridge.isAlive()) {
+                            toast("Shizuku 没有在运行，请先启动 Shizuku")
+                            askWorkMode()
+                            return@listDialog
+                        }
+                        ShizukuBridge.requestPermission()
+                        ShizukuBridge.bind(android.content.ComponentName(this, RemoteService::class.java))
+                        if (ShizukuBridge.hasPermission()) {
+                            WorkMode.set(this, WorkMode.SHIZUKU)
+                            renderPage(currentPage, animate = false)
+                        } else {
+                            toast("请先在 Shizuku 里允许「自用模块」使用")
+                            askWorkMode()
+                        }
+                    }
+
+                    else -> {
+                        WorkMode.set(this, WorkMode.NO_ROOT)
+                        renderPage(currentPage, animate = false)
+                    }
+                }
+            }
+        )
     }
 
     private fun buildShell() {
@@ -171,7 +271,7 @@ class MainActivity : Activity(), ScreenHost {
 
     private fun updateNav(page: String, animate: Boolean) {
         val group = when (page) {
-            PAGE_FEATURES -> 1
+            PAGE_FEATURES, PAGE_UPDATE_BLOCK, PAGE_DIALOG_RULES, PAGE_HINT_STYLE, PAGE_KEYWORDS -> 1
             PAGE_SETTINGS, PAGE_PERMISSIONS, PAGE_ABOUT -> 2
             else -> 0
         }
@@ -186,7 +286,7 @@ class MainActivity : Activity(), ScreenHost {
                 item.scaleX = 0.97f
                 item.scaleY = 0.97f
                 item.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                    .setDuration(320).setInterpolator(DecelerateInterpolator()).start()
+                    .setDuration(480).setInterpolator(DecelerateInterpolator()).start()
             } else {
                 item.alpha = 1f
                 item.scaleX = 1f
@@ -202,9 +302,9 @@ class MainActivity : Activity(), ScreenHost {
 
         content.animate().cancel()
         if (animate) {
-            content.translationX = ui.dp(22) * direction
+            content.translationX = ui.dp(30) * direction
             content.alpha = 0.65f
-            content.animate().translationX(0f).alpha(1f).setDuration(320)
+            content.animate().translationX(0f).alpha(1f).setDuration(480)
                 .setInterpolator(DecelerateInterpolator()).start()
         } else {
             content.translationX = 0f
@@ -216,6 +316,10 @@ class MainActivity : Activity(), ScreenHost {
         when (page) {
             PAGE_HOME -> HomeScreen(this).render(content)
             PAGE_FEATURES -> FeaturesScreen(this).render(content)
+            PAGE_UPDATE_BLOCK -> UpdateBlockScreen(this, selectedPackage, selectedName).render(content)
+            PAGE_DIALOG_RULES -> DialogRulesScreen(this, selectedPackage.ifBlank { null }).render(content)
+            PAGE_HINT_STYLE -> HintStyleScreen(this, selectedPackage.ifBlank { null }).render(content)
+            PAGE_KEYWORDS -> KeywordScreen(this, selectedPackage, selectedName).render(content)
             PAGE_SETTINGS -> SettingsScreen(this).render(content)
             PAGE_PERMISSIONS -> PermissionsScreen(this).render(content)
             PAGE_ABOUT -> AboutScreen(this).render(content)
@@ -242,6 +346,30 @@ class MainActivity : Activity(), ScreenHost {
         selectedPackage = pkg
         selectedName = name
         renderPage(PAGE_APP, animate = true)
+    }
+
+    override fun openDialogRules(pkg: String?, name: String?) {
+        selectedPackage = pkg.orEmpty()
+        selectedName = name.orEmpty()
+        renderPage(PAGE_DIALOG_RULES, animate = true)
+    }
+
+    override fun openHintStyle(pkg: String?, name: String?) {
+        selectedPackage = pkg.orEmpty()
+        selectedName = name.orEmpty()
+        renderPage(PAGE_HINT_STYLE, animate = true)
+    }
+
+    override fun openKeywords(pkg: String, name: String) {
+        selectedPackage = pkg
+        selectedName = name
+        renderPage(PAGE_KEYWORDS, animate = true)
+    }
+
+    override fun openUpdateBlock(pkg: String, name: String) {
+        selectedPackage = pkg
+        selectedName = name
+        renderPage(PAGE_UPDATE_BLOCK, animate = true)
     }
 
     override fun openLogs(pkg: String, name: String) {
@@ -293,6 +421,10 @@ class MainActivity : Activity(), ScreenHost {
             )
             PAGE_HELP -> renderPage(if (previousPage == PAGE_SETTINGS) PAGE_SETTINGS else PAGE_HOME, animate = true)
             PAGE_PERMISSIONS, PAGE_ABOUT -> renderPage(PAGE_SETTINGS, animate = true)
+            PAGE_UPDATE_BLOCK -> renderPage(PAGE_FEATURES, animate = true)
+            PAGE_DIALOG_RULES -> renderPage(PAGE_FEATURES, animate = true)
+            PAGE_HINT_STYLE -> renderPage(PAGE_FEATURES, animate = true)
+            PAGE_KEYWORDS -> renderPage(PAGE_UPDATE_BLOCK, animate = true)
             PAGE_FEATURES -> renderPage(PAGE_HOME, animate = true)
             PAGE_SETTINGS -> renderPage(PAGE_HOME, animate = true)
             else -> finish()
@@ -309,6 +441,10 @@ class MainActivity : Activity(), ScreenHost {
     companion object {
         private const val PAGE_HOME = "home"
         private const val PAGE_FEATURES = "features"
+        private const val PAGE_UPDATE_BLOCK = "update_block"
+        private const val PAGE_DIALOG_RULES = "dialog_rules"
+        private const val PAGE_HINT_STYLE = "hint_style"
+        private const val PAGE_KEYWORDS = "keywords"
         private const val PAGE_SETTINGS = "settings"
         private const val PAGE_PERMISSIONS = "permissions"
         private const val PAGE_ABOUT = "about"
@@ -323,5 +459,6 @@ class MainActivity : Activity(), ScreenHost {
         private const val EXTRA_PREVIEW_SHOW_MS = "preview_show_ms"
         private const val EXTRA_PREVIEW_FADE_MS = "preview_fade_ms"
         private const val EXTRA_KEEP_ALIVE = "keep_alive"
+        private const val EXTRA_PAGE = "page"
     }
 }

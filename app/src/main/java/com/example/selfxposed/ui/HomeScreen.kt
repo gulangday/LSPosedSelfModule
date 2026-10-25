@@ -22,6 +22,10 @@ class HomeScreen(private val host: ScreenHost) {
 
     fun render(into: LinearLayout) {
         into.addView(heroCard())
+        // 操作入口固定在列表上方，应用多了也不会被挤到最下面。
+        into.addView(ui.actionCard("添加目标应用", "从已安装的启动器应用中选择") { host.openPicker() })
+        into.addView(ui.actionCard("使用说明", "作用域与模块开关需要同时启用") { host.openHelp() })
+
         into.addView(ui.sectionTitle("目标应用"))
         into.addView(ui.hint("开关状态与 LSPosed 作用域是两个独立状态：作用域没有勾选时模块不会被注入，开关也不会生效。"))
 
@@ -51,9 +55,6 @@ class HomeScreen(private val host: ScreenHost) {
         } else {
             entries.forEach { into.addView(appCard(it)) }
         }
-
-        into.addView(ui.actionCard("添加目标应用", "从已安装的启动器应用中选择") { host.openPicker() })
-        into.addView(ui.actionCard("使用说明", "作用域与模块开关需要同时启用") { host.openHelp() })
     }
 
     private fun heroCard(): View = ui.card(Palette.hero).apply {
@@ -75,8 +76,7 @@ class HomeScreen(private val host: ScreenHost) {
             minimumHeight = ui.dp(64)
         }
 
-        // 只有图标、应用名、包名可点击进入设置；卡片其余区域（版本、状态、空白）不响应。
-        val openSettings = { host.openApp(entry.pkg, entry.label) }
+        // 左侧整块（图标、名称、包名、版本、状态、空白）长按可移除；点击无响应。
         val removeApp = { confirmRemove(entry); true }
 
         val left = LinearLayout(ui.activity).apply {
@@ -85,6 +85,8 @@ class HomeScreen(private val host: ScreenHost) {
             setPadding(0, ui.dp(6), ui.dp(8), ui.dp(6))
             isClickable = false
             isFocusable = false
+            isLongClickable = true
+            setOnLongClickListener { removeApp() }
         }
 
         val placeholder: Drawable =
@@ -92,9 +94,8 @@ class HomeScreen(private val host: ScreenHost) {
         val iconView = ui.icon(repo.icon(entry.pkg) ?: placeholder, 40).apply {
             alpha = if (entry.installed) 1f else 0.5f
             (layoutParams as LinearLayout.LayoutParams).rightMargin = ui.dp(10)
-            contentDescription = "进入${entry.label}设置"
-            ui.pressable(this) { openSettings() }
-            setOnLongClickListener { removeApp() }
+            isClickable = false
+            isFocusable = false
         }
         left.addView(iconView)
 
@@ -105,19 +106,19 @@ class HomeScreen(private val host: ScreenHost) {
             isFocusable = false
         }
 
-        fun clickableText(text: String, sizeSp: Int, color: Int, bold: Boolean, topPad: Int) =
+        fun plainText(text: String, sizeSp: Int, color: Int, bold: Boolean, topPad: Int) =
             ui.label(text, sizeSp, color, bold).apply {
                 setPadding(0, ui.dp(topPad), 0, ui.dp(1))
-                ui.pressable(this) { openSettings() }
-                setOnLongClickListener { removeApp() }
+                isClickable = false
+                isFocusable = false
             }
 
         details.addView(
-            clickableText(entry.label, 15, if (entry.installed) Palette.ink else Palette.muted, true, 0),
+            plainText(entry.label, 15, if (entry.installed) Palette.ink else Palette.muted, true, 0),
             LinearLayout.LayoutParams(-2, -2)
         )
         details.addView(
-            clickableText(entry.pkg, 10, Palette.muted, false, 2),
+            plainText(entry.pkg, 10, Palette.muted, false, 2),
             LinearLayout.LayoutParams(-2, -2)
         )
         details.addView(ui.label("版本：${entry.version ?: "未安装"}", 10, Palette.muted, false))

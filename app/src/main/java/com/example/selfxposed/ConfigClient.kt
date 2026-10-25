@@ -35,6 +35,8 @@ object ConfigClient {
     const val M_GET_TARGETS = "get_targets"
     const val M_ADD_TARGET = "add_target"
     const val M_REMOVE_TARGET = "remove_target"
+    const val M_GET_HINT_STYLE = "get_hint_style"
+    const val M_SET_HINT_STYLE = "set_hint_style"
 
     // 字段名
     const val K_CONFIG = "config"
@@ -43,6 +45,7 @@ object ConfigClient {
     const val K_TARGETS = "targets"
     const val K_DETECTED = "detected"
     const val K_LAST_SEEN = "last_seen"
+    const val K_HINT_STYLE = "hint_style"
 
     fun defaults(): JSONObject = JSONObject()
         .put("enabled", false)
@@ -117,5 +120,16 @@ object ConfigClient {
 
     fun removeTarget(resolver: ContentResolver, pkg: String) {
         call(resolver, M_REMOVE_TARGET, pkg)
+    }
+
+    fun hintStyle(resolver: ContentResolver): String? = try {
+        call(resolver, M_GET_HINT_STYLE, "").getString(K_HINT_STYLE)?.takeIf { it.isNotBlank() }
+    } catch (_: Throwable) {
+        null
+    }
+
+    fun saveHintStyle(resolver: ContentResolver, json: String) {
+        val extras = Bundle().apply { putString(K_HINT_STYLE, json) }
+        call(resolver, M_SET_HINT_STYLE, "", extras)
     }
 }

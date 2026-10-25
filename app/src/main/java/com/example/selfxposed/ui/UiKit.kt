@@ -132,29 +132,54 @@ class Ui(val activity: Activity) {
 
     /**
      * 点击动画：按下缩小并变淡，抬起后回弹，回弹结束再执行动作。
-     * 所有可点卡片/按钮都走这里，避免"点下去没反应"的观感。
+     * 注意：这里用 OnTouchListener 接管了事件，长按必须自己检测，否则 setOnLongClickListener 不会触发。
      */
-    fun pressable(view: View, onClick: () -> Unit) {
+    fun pressable(view: View, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
         view.isClickable = true
         view.isFocusable = true
+        val slop = android.view.ViewConfiguration.get(activity).scaledTouchSlop
+        var longPressFired = false
+        var downX = 0f
+        var downY = 0f
+
+        val longPress = Runnable {
+            longPressFired = true
+            onLongClick?.invoke()
+        }
+
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    longPressFired = false
+                    downX = event.rawX
+                    downY = event.rawY
                     v.animate().cancel()
                     v.animate().scaleX(0.96f).scaleY(0.96f).alpha(0.8f)
                         .setDuration(90).start()
+                    if (onLongClick != null) v.postDelayed(longPress, 500)
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    if (kotlin.math.abs(event.rawX - downX) > slop ||
+                        kotlin.math.abs(event.rawY - downY) > slop
+                    ) {
+                        v.removeCallbacks(longPress)
+                    }
                     true
                 }
 
                 MotionEvent.ACTION_UP -> {
+                    v.removeCallbacks(longPress)
                     v.animate().cancel()
                     v.animate().scaleX(1f).scaleY(1f).alpha(1f)
                         .setDuration(150).setInterpolator(DecelerateInterpolator())
-                        .withEndAction { onClick() }.start()
+                        .withEndAction { if (!longPressFired) onClick() }.start()
                     true
                 }
 
                 MotionEvent.ACTION_CANCEL -> {
+                    v.removeCallbacks(longPress)
                     v.animate().cancel()
                     v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(150).start()
                     true
@@ -196,14 +221,16 @@ class Ui(val activity: Activity) {
 
     /**
      * 自绘风格对话框，替代系统 AlertDialog，和页面观感一致。
-     * cancel 传 null 表示只有一个按钮。
+     * cancelText 传 null 表示只有一个按钮；onCancel 传 null 时取消按钮只关闭对话框。
      */
     fun dialog(
         title: String,
         message: String,
         confirmText: String = "确定",
         cancelText: String? = "取消",
-        onConfirm: () -> Unit = {}
+        cancelable: Boolean = true,
+        onConfirm: () -> Unit = {},
+        onCancel: (() -> Unit)? = null
     ) {
         val dialog = Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar)
         val wrapper = LinearLayout(activity).apply {
@@ -212,7 +239,7 @@ class Ui(val activity: Activity) {
             setPadding(dp(28), dp(24), dp(28), dp(24))
             setBackgroundColor(Color.argb(120, 0, 0, 0))
             isClickable = true
-            setOnClickListener { dialog.dismiss() }
+            setOnClickListener { if (cancelable) dialog.dismiss() }
         }
         val cardView = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -236,7 +263,10 @@ class Ui(val activity: Activity) {
                 setPadding(dp(16), dp(10), dp(16), dp(10))
                 background = rounded(Palette.background, 20)
             }
-            pressable(cancel) { dialog.dismiss() }
+            pressable(cancel, {
+                dialog.dismiss()
+                onCancel?.invoke()
+            })
             buttons.addView(cancel)
         }
         val confirm = label(confirmText, 14, Color.WHITE, true).apply {
@@ -244,16 +274,100 @@ class Ui(val activity: Activity) {
             setPadding(dp(18), dp(10), dp(18), dp(10))
             background = rounded(Palette.accent, 20)
         }
-        pressable(confirm) {
+        pressable(confirm, {
             dialog.dismiss()
             onConfirm()
-        }
+        })
         buttons.addView(confirm, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
         cardView.addView(buttons, LinearLayout.LayoutParams(-1, -2))
 
         wrapper.addView(cardView, LinearLayout.LayoutParams(-1, -2))
         dialog.setContentView(wrapper)
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.setCanceledOnTouchOutside(cancelable)
+        dialog.setCancelable(cancelable)
         dialog.show()
+    }
+
+    /** 自绘列表选择框（替代 AlertDialog.setItems）；selectedIndex >= 0 时高亮当前项。 */
+    fun listDialog(
+        title: String,
+        items: List<String>,
+        selectedIndex: Int = -1,
+        showCancel: Boolean = true,
+        onPick: (Int) -> Unit,
+        cancelText: String = "取消"
+    ) {
+        val dialog = Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar)
+        val wrapper = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(24), dp(28), dp(24))
+            setBackgroundColor(Color.argb(120, 0, 0, 0))
+            isClickable = true
+            setOnClickListener { dialog.dismiss() }
+        }
+        val cardView = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(18), dp(16), dp(10))
+            background = rounded(Palette.surface, 20)
+            elevation = dp(8).toFloat()
+            isClickable = true
+        }
+        cardView.addView(label(title, 16, Palette.ink, true).apply {
+            setPadding(dp(4), 0, dp(4), dp(8))
+        })
+        items.forEachIndexed { index, item ->
+            val chosen = index == selectedIndex
+            val row = label(
+                if (chosen) "✓  $item" else item,
+                15,
+                if (chosen) Palette.accent else Palette.ink,
+                chosen
+            ).apply {
+                setPadding(dp(14), dp(13), dp(14), dp(13))
+                background = rounded(if (chosen) Palette.hero else Palette.background, 12)
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
+            }
+            pressable(row, {
+                dialog.dismiss()
+                onPick(index)
+            })
+            cardView.addView(row)
+        }
+        if (showCancel) {
+            val cancel = label(cancelText, 14, Palette.muted, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(16), dp(11), dp(16), dp(11))
+            }
+            pressable(cancel, { dialog.dismiss() })
+            cardView.addView(cancel, LinearLayout.LayoutParams(-1, -2))
+        } else {
+            dialog.setCancelable(false)
+            dialog.setCanceledOnTouchOutside(false)
+        }
+
+        wrapper.addView(cardView, LinearLayout.LayoutParams(-1, -2))
+        dialog.setContentView(wrapper)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
+    }
+
+    /** 需要 root 但当前是非 Root 模式时的置灰入口（明显不可用）。 */
+    fun lockedCard(title: String, subtitle: String): View {
+        val disabledInk = Color.rgb(158, 155, 165)
+        val container = card(Palette.surfaceMuted)
+        container.isEnabled = false
+        container.isClickable = false
+        container.addView(label(title, 15, disabledInk, true))
+        container.addView(label(subtitle, 12, disabledInk, false).apply {
+            setPadding(0, dp(5), 0, 0)
+        })
+        container.addView(label("🔒 需要 root", 11, disabledInk, true).apply {
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            background = rounded(Color.rgb(220, 219, 224), 10)
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) }
+        })
+        return container
     }
 }
