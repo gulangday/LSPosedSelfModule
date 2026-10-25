@@ -10,6 +10,7 @@
 - **每个应用独立配置**：总开关、提示开关、弹窗文字、显示时长（0.5–10 秒）、淡出时长（0–3 秒）。
 - **切换界面不重置计时**：同一应用内切换 Activity 时，弹窗跟着新界面继续显示剩余时间。
 - **跳过启动页**：启动页（Splash/Welcome 等）会被跳过，只在实际主界面上弹一次，避免"闪一下又出现"。
+- **后台常驻与自启动**：前台服务保持模块进程存活，并引导开启系统自启动，模块被划掉后仍能弹窗。
 - **运行日志**：每个应用最多保留 300 条记录，可在模块里查看与清空。
 - **Hook 状态**：首页卡片显示「Hook 已连接 / 待检测」，用来区分"作用域没勾"和"开关没开"。
 
@@ -22,6 +23,9 @@ app/src/main/java/com/example/selfxposed/
 ├── PopupController.kt       # 弹窗视图与计时（自绘 DecorView 子视图）
 ├── ConfigClient.kt          # 目标进程 ↔ 模块 的字段与 Provider 接口
 ├── ModuleConfigProvider.kt  # SharedPreferences 读写与参数校验
+├── KeepAliveService.kt      # 后台常驻前台服务
+├── KeepAlive.kt             # 常驻开关的存储
+├── BootReceiver.kt          # 开机后自动拉起常驻服务
 ├── data/ModuleRepository.kt # 界面侧数据层（配置、日志、目标列表、应用信息）
 └── ui/                      # Palette / UiKit / ScreenHost / 各页面
     ├── HomeScreen.kt        # 目标应用列表（开关在右侧，左侧进设置）
@@ -57,15 +61,18 @@ app/src/main/java/com/example/selfxposed/
 LSPosed 没有公开接口让模块查询"当前应用是否已勾选作用域"，所以主页只能通过运行时握手
 显示「已连接 / 待检测」。状态是「待检测」时，先检查作用域是否勾选、以及添加应用后有没有启动过它。
 
-**2. 国产 ROM 的"自启动"拦截。**
-目标应用读取配置要访问模块的 ContentProvider，MIUI 等系统可能拦截这次跨应用唤醒
+**2. 国产 ROM 的"自启动"拦截（已解决，需要一次性授权）。**
+目标应用读配置时会跨进程唤起本模块，MIUI 等系统默认禁止这种唤醒
 （日志里表现为 `WakePathChecker ... Reject` / `Unable to launch app`）。
-模块对此做了两层处理：
+一旦模块进程被划掉或清理，弹窗就会失效。
 
-- 优先用 LSPosed 的文件服务直接读模块的 SharedPreferences（不需要唤醒模块进程）；
-- 直读不可用时才回退到 ContentProvider。
+解决办法是两步（在模块「设置 → 后台与自启动」里都有入口）：
 
-如果「Hook 已连接」显示正常但弹窗不出现，多半是模块应用被系统冻结了，把模块加入自启动白名单即可。
+1. 打开「后台常驻」：模块会以前台服务常驻，尽量避免被系统回收；
+2. 在系统的「自启动管理」里允许本模块自启动：这样即使被划掉，目标应用仍能把它唤醒。
+
+两项都开启后，把模块从最近任务划掉，目标应用照样能正常弹窗（已实测）。
+只做第 1 步不够：划掉模块等价于强制停止，前台服务也会随之结束。
 
 ## 调试入口
 
@@ -76,6 +83,13 @@ adb shell am start -n com.example.selfxposed/.MainActivity \
   --ez preview_popup true \
   --es preview_text "测试文字" \
   --ei preview_show_ms 5000 --ei preview_fade_ms 1000
+```
+
+打开/关闭后台常驻（等价于设置页里的开关）：
+
+```bash
+adb shell am start -n com.example.selfxposed/.MainActivity --ez keep_alive true
+adb shell am start -n com.example.selfxposed/.MainActivity --ez keep_alive false
 ```
 
 ## 安全提示

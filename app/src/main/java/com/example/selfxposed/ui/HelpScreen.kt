@@ -44,5 +44,15 @@ class HelpScreen(private val host: ScreenHost) {
                 13, Palette.muted, false
             ).apply { setPadding(0, ui.dp(8), 0, 0) })
         })
+
+        into.addView(ui.card().apply {
+            addView(ui.label("关于后台与自启动", 15, Palette.ink, true))
+            addView(ui.label(
+                "· 目标应用读取配置时需要唤起本模块，模块被系统清掉后，只有「自启动」权限才能让它被唤醒；\n" +
+                    "· 在「设置 → 后台与自启动」里打开「后台常驻」，再到系统的自启动管理里允许本模块；\n" +
+                    "· 两项都开启后，即使把模块从最近任务里划掉，目标应用依然能正常弹出提示。",
+                13, Palette.muted, false
+            ).apply { setPadding(0, ui.dp(8), 0, 0) })
+        })
     }
 }

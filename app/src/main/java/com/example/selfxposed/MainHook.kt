@@ -28,6 +28,7 @@ class MainHook : IXposedHookLoadPackage {
         val pkg = lpparam.packageName ?: return
         if (!shouldHook(pkg)) return
         logFramework("自用模块: 正在注入 $pkg")
+
         try {
             XposedHelpers.findAndHookMethod(
                 Instrumentation::class.java,
@@ -62,10 +63,11 @@ class MainHook : IXposedHookLoadPackage {
         }
 
         // 2. 读取该应用的配置；读取失败时只提示一次，避免刷屏。
-        val cfg = readConfig(activity, pkg) ?: run {
+        val loaded = readConfig(activity, pkg) ?: run {
             logOnce(failedLogged, pkg) { writeLog(activity, pkg, "读取配置失败：模块与本应用无法通信") }
             return
         }
+        val cfg = loaded.cfg
 
         if (!cfg.optBoolean("enabled", false)) {
             logOnce(disabledLogged, pkg) { writeLog(activity, pkg, "Hook 已触发，但模块开关处于关闭状态") }
@@ -133,17 +135,19 @@ class MainHook : IXposedHookLoadPackage {
         return TRANSIENT_HINTS.any { name.contains(it) }
     }
 
+    private data class LoadedConfig(val cfg: JSONObject, val source: String)
+
     /**
      * 优先通过 LSPosed 的文件服务直接读模块的 SharedPreferences：
      * 这条路径不需要唤醒模块应用进程，因此国产 ROM 的“自启动”拦截不会影响弹窗。
      * 直读不可用（例如极旧的 LSPosed）时再退回 ContentProvider。
      */
-    private fun readConfig(activity: Activity, pkg: String): JSONObject? {
+    private fun readConfig(activity: Activity, pkg: String): LoadedConfig? {
+        // 每次重新构造实例：如果进程启动早期文件服务还没就绪，
+        // 第一次读到的会是空表，缓存下来就永远读不到了。
         val raw = try {
-            filePrefs?.let { prefs ->
-                if (prefs.hasFileChanged()) prefs.reload()
-                prefs.getString(ConfigClient.keyConfig(pkg), null)
-            }
+            XSharedPreferences(ConfigClient.MODULE_PACKAGE, ConfigClient.PREFS_NAME)
+                .getString(ConfigClient.keyConfig(pkg), null)
         } catch (t: Throwable) {
             logFramework("自用模块: 直读配置失败，$pkg：${describe(t)}")
             null
@@ -153,7 +157,7 @@ class MainHook : IXposedHookLoadPackage {
             return try {
                 val merged = ConfigClient.merge(JSONObject(raw))
                 logFramework("自用模块: $pkg 配置来自模块偏好文件")
-                merged
+                LoadedConfig(merged, "file")
             } catch (t: Throwable) {
                 logFramework("自用模块: 配置解析失败，$pkg：${describe(t)}")
                 null
@@ -161,7 +165,9 @@ class MainHook : IXposedHookLoadPackage {
         }
 
         return try {
-            ConfigClient.config(activity.contentResolver, pkg)
+            val cfg = ConfigClient.config(activity.contentResolver, pkg)
+            logFramework("自用模块: $pkg 配置来自 Provider")
+            LoadedConfig(cfg, "provider")
         } catch (t: Throwable) {
             logFramework("自用模块: Provider 读取配置失败，$pkg：${describe(t)}")
             null
@@ -187,16 +193,6 @@ class MainHook : IXposedHookLoadPackage {
     }
 
     private fun describe(t: Throwable) = "${t.javaClass.simpleName}: ${t.message ?: "无详细信息"}"
-
-    /** 每个目标进程只创建一次；LSPosed 会把它代理到守护进程读取模块目录。 */
-    private val filePrefs: XSharedPreferences? by lazy {
-        try {
-            XSharedPreferences(ConfigClient.MODULE_PACKAGE, ConfigClient.PREFS_NAME)
-        } catch (t: Throwable) {
-            logFramework("自用模块: XSharedPreferences 不可用：${describe(t)}")
-            null
-        }
-    }
 
     private fun shouldHook(pkg: String): Boolean = when {
         pkg == ConfigClient.MODULE_PACKAGE -> false

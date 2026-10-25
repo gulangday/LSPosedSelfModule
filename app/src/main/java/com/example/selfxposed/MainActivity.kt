@@ -57,6 +57,15 @@ class MainActivity : Activity(), ScreenHost {
 
         buildShell()
         renderPage(PAGE_HOME, animate = false)
+
+        // 调试/自动化入口：--ez keep_alive true 等价于在设置里打开「后台常驻」。
+        intent?.takeIf { it.hasExtra(EXTRA_KEEP_ALIVE) }?.let {
+            val enabled = it.getBooleanExtra(EXTRA_KEEP_ALIVE, false)
+            KeepAlive.setEnabled(this, enabled)
+        }
+
+        // 打开模块时确保常驻服务在运行（开机后也由 BootReceiver 负责拉起）。
+        if (KeepAlive.isEnabled(this)) KeepAliveService.start(this)
         if (intent?.getBooleanExtra(EXTRA_PREVIEW_POPUP, false) == true) showDebugPreview()
 
         // Android 13+ 使用 OnBackInvokedDispatcher；目标 SDK 仍较低时系统走 onBackPressed。
@@ -283,5 +292,6 @@ class MainActivity : Activity(), ScreenHost {
         private const val EXTRA_PREVIEW_TEXT = "preview_text"
         private const val EXTRA_PREVIEW_SHOW_MS = "preview_show_ms"
         private const val EXTRA_PREVIEW_FADE_MS = "preview_fade_ms"
+        private const val EXTRA_KEEP_ALIVE = "keep_alive"
     }
 }

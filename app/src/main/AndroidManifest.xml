@@ -1,5 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -21,9 +24,22 @@
             android:enabled="true"
             android:exported="true"
             android:grantUriPermissions="false" />
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposedscope" android:value="com.kugou.android.lite" />
         <meta-data android:name="xposeddescription" android:value="@string/module_description" />
         <meta-data android:name="xposedminversion" android:value="82" />
+        <!-- 允许 LSPosed 把模块的偏好文件开放给被注入的进程直接读取（XSharedPreferences）。 -->
+        <meta-data android:name="xposedsharedprefs" android:value="true" />
     </application>
 </manifest>
