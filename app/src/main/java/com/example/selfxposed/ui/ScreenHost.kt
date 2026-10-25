@@ -10,7 +10,10 @@ interface ScreenHost {
     val repo: ModuleRepository
 
     fun openHome()
+    fun openFeatures()
     fun openSettings()
+    fun openPermissions()
+    fun openAbout()
     fun openApp(pkg: String, name: String)
     fun openLogs(pkg: String, name: String)
     fun openHelp()
@@ -20,4 +23,5 @@ interface ScreenHost {
     fun refresh()
     fun toast(message: String)
     fun versionName(): String
+    fun versionCode(): Int
 }

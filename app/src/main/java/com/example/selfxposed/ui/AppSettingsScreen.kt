@@ -89,7 +89,6 @@ class AppSettingsScreen(
             cfg.put("fadeMs", fadeMs)
             repo.saveConfig(pkg, cfg)
             repo.log(pkg, "设置已保存：显示 ${showMs}ms，淡出 ${fadeMs}ms")
-            host.toast("已保存")
         })
 
         into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
@@ -108,16 +107,15 @@ class AppSettingsScreen(
         if (ms <= 0) "无淡出" else String.format(Locale.US, "%s %.1f 秒", prefix, ms / 1000f)
 
     private fun confirmRemove() {
-        AlertDialog.Builder(ui.activity)
-            .setTitle("移除目标应用")
-            .setMessage("将从主页移除「$name」并关闭它的模块开关，已有日志会保留。")
-            .setPositiveButton("移除") { _, _ ->
-                repo.removeTarget(pkg)
-                host.openHome()
-                host.toast("已移除 $name")
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        ui.dialog(
+            title = "移除目标应用",
+            message = "将从主页移除「$name」并关闭它的模块开关，已有日志会保留。",
+            confirmText = "移除",
+            cancelText = "取消"
+        ) {
+            repo.removeTarget(pkg)
+            host.openHome()
+        }
     }
 
     companion object {

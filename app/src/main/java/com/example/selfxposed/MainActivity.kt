@@ -14,11 +14,14 @@ import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import com.example.selfxposed.data.ModuleRepository
+import com.example.selfxposed.ui.AboutScreen
 import com.example.selfxposed.ui.AppSettingsScreen
+import com.example.selfxposed.ui.FeaturesScreen
 import com.example.selfxposed.ui.HelpScreen
 import com.example.selfxposed.ui.HomeScreen
 import com.example.selfxposed.ui.LogsScreen
 import com.example.selfxposed.ui.Palette
+import com.example.selfxposed.ui.PermissionsScreen
 import com.example.selfxposed.ui.PickerScreen
 import com.example.selfxposed.ui.ScreenHost
 import com.example.selfxposed.ui.SettingsScreen
@@ -36,6 +39,7 @@ class MainActivity : Activity(), ScreenHost {
     private lateinit var content: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var navHome: TextView
+    private lateinit var navFeatures: TextView
     private lateinit var navSettings: TextView
 
     private var currentPage = PAGE_HOME
@@ -101,7 +105,7 @@ class MainActivity : Activity(), ScreenHost {
         header.addView(ui.label("LSPosed · 模块管理", 12, Palette.muted, false).apply {
             setPadding(0, ui.dp(3), 0, 0)
         })
-        header.addView(ui.label("v${versionName()} · 自定义弹窗", 11, Palette.accent, true).apply {
+        header.addView(ui.label("v${versionName()} · 内测版", 11, Palette.accent, true).apply {
             setPadding(0, ui.dp(6), 0, 0)
         })
         root.addView(header)
@@ -125,8 +129,10 @@ class MainActivity : Activity(), ScreenHost {
             elevation = ui.dp(2).toFloat()
         }
         navHome = navItem("主页")
+        navFeatures = navItem("功能")
         navSettings = navItem("设置")
         nav.addView(navHome, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
+        nav.addView(navFeatures, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
         nav.addView(navSettings, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
         navWrap.addView(nav, LinearLayout.LayoutParams(-1, -2))
         root.addView(navWrap)
@@ -135,6 +141,9 @@ class MainActivity : Activity(), ScreenHost {
 
         navHome.setOnClickListener {
             if (currentPage !in HOME_PAGES) renderPage(PAGE_HOME, animate = true)
+        }
+        navFeatures.setOnClickListener {
+            if (currentPage != PAGE_FEATURES) renderPage(PAGE_FEATURES, animate = true)
         }
         navSettings.setOnClickListener {
             if (currentPage != PAGE_SETTINGS) renderPage(PAGE_SETTINGS, animate = true)
@@ -161,11 +170,14 @@ class MainActivity : Activity(), ScreenHost {
     }
 
     private fun updateNav(page: String, animate: Boolean) {
-        val homeSelected = page in HOME_PAGES
-        val selected = if (homeSelected) navHome else navSettings
-        val unselected = if (homeSelected) navSettings else navHome
+        val group = when (page) {
+            PAGE_FEATURES -> 1
+            PAGE_SETTINGS, PAGE_PERMISSIONS, PAGE_ABOUT -> 2
+            else -> 0
+        }
 
-        fun apply(item: TextView, isSelected: Boolean) {
+        listOf(navHome, navFeatures, navSettings).forEachIndexed { index, item ->
+            val isSelected = index == group
             item.animate().cancel()
             item.setTextColor(if (isSelected) Color.WHITE else Palette.muted)
             item.background = ui.rounded(if (isSelected) Palette.accent else Color.TRANSPARENT, 24)
@@ -181,9 +193,6 @@ class MainActivity : Activity(), ScreenHost {
                 item.scaleY = 1f
             }
         }
-
-        apply(selected, true)
-        apply(unselected, false)
     }
 
     private fun renderPage(page: String, animate: Boolean) {
@@ -206,7 +215,10 @@ class MainActivity : Activity(), ScreenHost {
         content.removeAllViews()
         when (page) {
             PAGE_HOME -> HomeScreen(this).render(content)
+            PAGE_FEATURES -> FeaturesScreen(this).render(content)
             PAGE_SETTINGS -> SettingsScreen(this).render(content)
+            PAGE_PERMISSIONS -> PermissionsScreen(this).render(content)
+            PAGE_ABOUT -> AboutScreen(this).render(content)
             PAGE_APP -> AppSettingsScreen(this, selectedPackage, selectedName).render(content)
             PAGE_LOGS -> LogsScreen(this, logsPackage, logsName, logsBackPage).render(content)
             PAGE_HELP -> HelpScreen(this).render(content)
@@ -218,7 +230,13 @@ class MainActivity : Activity(), ScreenHost {
 
     override fun openHome() = renderPage(PAGE_HOME, animate = true)
 
+    override fun openFeatures() = renderPage(PAGE_FEATURES, animate = true)
+
     override fun openSettings() = renderPage(PAGE_SETTINGS, animate = true)
+
+    override fun openPermissions() = renderPage(PAGE_PERMISSIONS, animate = true)
+
+    override fun openAbout() = renderPage(PAGE_ABOUT, animate = true)
 
     override fun openApp(pkg: String, name: String) {
         selectedPackage = pkg
@@ -252,6 +270,13 @@ class MainActivity : Activity(), ScreenHost {
         "?"
     }
 
+    @Suppress("DEPRECATION")
+    override fun versionCode(): Int = try {
+        packageManager.getPackageInfo(packageName, 0).versionCode
+    } catch (_: Throwable) {
+        0
+    }
+
     // ---- 返回键 ----
 
     @Suppress("DEPRECATION")
@@ -267,6 +292,8 @@ class MainActivity : Activity(), ScreenHost {
                 animate = true
             )
             PAGE_HELP -> renderPage(if (previousPage == PAGE_SETTINGS) PAGE_SETTINGS else PAGE_HOME, animate = true)
+            PAGE_PERMISSIONS, PAGE_ABOUT -> renderPage(PAGE_SETTINGS, animate = true)
+            PAGE_FEATURES -> renderPage(PAGE_HOME, animate = true)
             PAGE_SETTINGS -> renderPage(PAGE_HOME, animate = true)
             else -> finish()
         }
@@ -281,7 +308,10 @@ class MainActivity : Activity(), ScreenHost {
 
     companion object {
         private const val PAGE_HOME = "home"
+        private const val PAGE_FEATURES = "features"
         private const val PAGE_SETTINGS = "settings"
+        private const val PAGE_PERMISSIONS = "permissions"
+        private const val PAGE_ABOUT = "about"
         private const val PAGE_APP = "app"
         private const val PAGE_LOGS = "logs"
         private const val PAGE_HELP = "help"

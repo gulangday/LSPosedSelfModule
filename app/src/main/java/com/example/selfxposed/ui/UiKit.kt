@@ -1,12 +1,16 @@
 package com.example.selfxposed.ui
 
 import android.app.Activity
+import android.app.Dialog
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
@@ -61,9 +65,7 @@ class Ui(val activity: Activity) {
         container.addView(label(subtitle, 12, Palette.muted, false).apply {
             setPadding(0, dp(5), 0, 0)
         })
-        container.isClickable = true
-        container.isFocusable = true
-        container.setOnClickListener { onClick() }
+        pressable(container, onClick)
         return container
     }
 
@@ -75,10 +77,8 @@ class Ui(val activity: Activity) {
             cornerRadius = dp(24).toFloat()
             setStroke(dp(1), Palette.accentSoft)
         }
-        isClickable = true
-        isFocusable = true
         elevation = dp(1).toFloat()
-        setOnClickListener { onClick() }
+        pressable(this, onClick)
         layoutParams = LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(12) }
     }
 
@@ -129,4 +129,131 @@ class Ui(val activity: Activity) {
             alpha = if (enabled) 1f else 0.38f
             setOnCheckedChangeListener { _, value -> onChange(value) }
         }
+
+    /**
+     * 点击动画：按下缩小并变淡，抬起后回弹，回弹结束再执行动作。
+     * 所有可点卡片/按钮都走这里，避免"点下去没反应"的观感。
+     */
+    fun pressable(view: View, onClick: () -> Unit) {
+        view.isClickable = true
+        view.isFocusable = true
+        view.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.animate().cancel()
+                    v.animate().scaleX(0.96f).scaleY(0.96f).alpha(0.8f)
+                        .setDuration(90).start()
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    v.animate().cancel()
+                    v.animate().scaleX(1f).scaleY(1f).alpha(1f)
+                        .setDuration(150).setInterpolator(DecelerateInterpolator())
+                        .withEndAction { onClick() }.start()
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    v.animate().cancel()
+                    v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(150).start()
+                    true
+                }
+
+                else -> false
+            }
+        }
+    }
+
+    /** 设置页入口行：左标题+副标题，右箭头。 */
+    fun entryRow(title: String, subtitle: String, onClick: () -> Unit): View {
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            background = rounded(Palette.surface, 18)
+            elevation = dp(1).toFloat()
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) }
+        }
+        val texts = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = false
+            isFocusable = false
+        }
+        texts.addView(label(title, 15, Palette.ink, true))
+        texts.addView(label(subtitle, 12, Palette.muted, false).apply {
+            setPadding(0, dp(5), 0, 0)
+        })
+        row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(label("›", 22, Palette.muted, false).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, 0, 0)
+            isClickable = false
+        })
+        pressable(row, onClick)
+        return row
+    }
+
+    /**
+     * 自绘风格对话框，替代系统 AlertDialog，和页面观感一致。
+     * cancel 传 null 表示只有一个按钮。
+     */
+    fun dialog(
+        title: String,
+        message: String,
+        confirmText: String = "确定",
+        cancelText: String? = "取消",
+        onConfirm: () -> Unit = {}
+    ) {
+        val dialog = Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar)
+        val wrapper = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(24), dp(28), dp(24))
+            setBackgroundColor(Color.argb(120, 0, 0, 0))
+            isClickable = true
+            setOnClickListener { dialog.dismiss() }
+        }
+        val cardView = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(16))
+            background = rounded(Palette.surface, 20)
+            elevation = dp(8).toFloat()
+            isClickable = true
+        }
+        cardView.addView(label(title, 17, Palette.ink, true))
+        cardView.addView(label(message, 13, Palette.muted, false).apply {
+            setPadding(0, dp(10), 0, dp(18))
+        })
+
+        val buttons = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+        }
+        if (cancelText != null) {
+            val cancel = label(cancelText, 14, Palette.muted, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                background = rounded(Palette.background, 20)
+            }
+            pressable(cancel) { dialog.dismiss() }
+            buttons.addView(cancel)
+        }
+        val confirm = label(confirmText, 14, Color.WHITE, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            background = rounded(Palette.accent, 20)
+        }
+        pressable(confirm) {
+            dialog.dismiss()
+            onConfirm()
+        }
+        buttons.addView(confirm, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
+        cardView.addView(buttons, LinearLayout.LayoutParams(-1, -2))
+
+        wrapper.addView(cardView, LinearLayout.LayoutParams(-1, -2))
+        dialog.setContentView(wrapper)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
+    }
 }

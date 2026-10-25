@@ -9,8 +9,8 @@ android {
         applicationId = "com.example.selfxposed"
         minSdk = 26
         targetSdk = 28
-        versionCode = 10
-        versionName = "2.1.1"
+        versionCode = 11
+        versionName = "2.2.0-beta1"
     }
     buildTypes { release { isMinifyEnabled = false } }
     compileOptions {
