@@ -23,3 +23,5 @@ local.properties
 # OS noise
 .DS_Store
 Thumbs.db
+
+debug.log
