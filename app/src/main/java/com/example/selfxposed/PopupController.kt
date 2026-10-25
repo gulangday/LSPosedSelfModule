@@ -34,7 +34,8 @@ object PopupController {
     private const val BOTTOM_MARGIN_DP = 96
     private const val SIDE_MARGIN_DP = 24
 
-    private val handler = Handler(Looper.getMainLooper())
+    // 同样原因：延迟到真正需要时再创建，避免在被注入进程的主线程 Looper 就绪前初始化。
+    private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private val states = HashMap<String, State>()
 
     private class State(val text: String, val showMs: Long, val fadeMs: Long) {

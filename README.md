@@ -1,32 +1,90 @@
-# 自用模块（LSPosed）2.0.0
+# 自用模块（LSPosed）2.1.0
+
+一个按应用配置的自定义弹窗模块：在目标应用打开时，在底部显示一条白底黑字的提示，
+显示时长与淡出时长都可以单独调整。
 
 ## 功能
-- 首页展示已安装的启动器应用（并固定展示酷狗概念版 `com.kugou.android.lite`）。
-- 每个应用独立保存总开关、弹窗开关、弹窗文字、显示时长、淡出时长和日志。
-- 目标应用中的提示弹窗为底部居中、白底黑字；默认显示 5 秒，再淡出 1 秒。
-- 切换目标应用内部 Activity 不会重置已经启动的弹窗计时。
-- 日志通过模块 ContentProvider 保存，可在模块首页查看。
 
-## 导入
-使用 Android Studio 打开项目根目录，等待 Gradle 同步后构建 APK。
-需要可访问 Maven Central 的网络环境，以解析 Android Gradle Plugin、Kotlin 插件和 Xposed API 依赖。
+- **自绘弹窗，不用系统 Toast**：白底、圆角、黑字、底部居中，显示与淡出时长精确可控。
+- **多目标应用**：首页「添加目标应用」从已安装应用里挑选，可添加多个，长按卡片可移除。
+- **每个应用独立配置**：总开关、提示开关、弹窗文字、显示时长（0.5–10 秒）、淡出时长（0–3 秒）。
+- **切换界面不重置计时**：同一应用内切换 Activity 时，弹窗跟着新界面继续显示剩余时间。
+- **跳过启动页**：启动页（Splash/Welcome 等）会被跳过，只在实际主界面上弹一次，避免"闪一下又出现"。
+- **运行日志**：每个应用最多保留 300 条记录，可在模块里查看与清空。
+- **Hook 状态**：首页卡片显示「Hook 已连接 / 待检测」，用来区分"作用域没勾"和"开关没开"。
 
-## LSPosed 配置
-1. 安装构建的 APK。
-2. 在 LSPosed 管理器启用模块。
-3. 在模块作用域里勾选要修改的目标应用。
-4. 回到“自用模块”，为同一应用开启模块开关。
-5. 点击应用卡片配置弹窗。
+## 项目结构
 
-## 重要限制
-LSPosed 没有向普通模块应用提供一个稳定、公开、可直接读取“当前每个应用是否已勾选作用域”的通用接口。因此，应用内开关启用时会提示用户先确认作用域；不能声称该提示是自动检测结果。若未勾选作用域，模块不会被注入目标应用，功能自然不会执行。
+```
+app/src/main/java/com/example/selfxposed/
+├── MainActivity.kt          # 外壳：标题、内容容器、底部导航、返回键
+├── MainHook.kt              # 注入入口：读配置、判断开关、调度弹窗
+├── PopupController.kt       # 弹窗视图与计时（自绘 DecorView 子视图）
+├── ConfigClient.kt          # 目标进程 ↔ 模块 的字段与 Provider 接口
+├── ModuleConfigProvider.kt  # SharedPreferences 读写与参数校验
+├── data/ModuleRepository.kt # 界面侧数据层（配置、日志、目标列表、应用信息）
+└── ui/                      # Palette / UiKit / ScreenHost / 各页面
+    ├── HomeScreen.kt        # 目标应用列表（开关在右侧，左侧进设置）
+    ├── AppSettingsScreen.kt # 单个应用的文字、时长、预览、保存
+    ├── PickerScreen.kt      # 搜索 + 分页添加应用
+    ├── SettingsScreen.kt    # 日志入口、说明、模块信息
+    ├── LogsScreen.kt        # 日志查看/刷新/清空
+    └── HelpScreen.kt        # 使用说明
+```
+
+## 构建
+
+```bash
+# 需要 JDK 17+、Android SDK（platform 35）与可访问 Maven 仓库的网络
+./gradlew assembleDebug
+# 产物：app/build/outputs/apk/debug/app-debug.apk
+```
+
+本仓库默认 SDK 路径在 `local.properties`（该文件不入库）。
+
+## 安装与配置
+
+1. 安装 APK，在 LSPosed 管理器里启用「自用模块」。
+2. 打开模块 →「添加目标应用」，选择需要弹窗的应用。
+3. 在 LSPosed 的**作用域**里勾选同一个应用（添加应用不会自动勾选作用域）。
+4. 启动一次该应用，模块记录一次运行时握手，首页状态变为「Hook 已连接」。
+5. 回到模块，打开该应用的开关，设置文字与时长，可先点「预览弹窗」看效果。
+6. 再次切到该应用，弹窗会在主界面底部出现。
+
+## 两个必须知道的限制
+
+**1. 作用域与开关是两件事。**
+LSPosed 没有公开接口让模块查询"当前应用是否已勾选作用域"，所以主页只能通过运行时握手
+显示「已连接 / 待检测」。状态是「待检测」时，先检查作用域是否勾选、以及添加应用后有没有启动过它。
+
+**2. 国产 ROM 的"自启动"拦截。**
+目标应用读取配置要访问模块的 ContentProvider，MIUI 等系统可能拦截这次跨应用唤醒
+（日志里表现为 `WakePathChecker ... Reject` / `Unable to launch app`）。
+模块对此做了两层处理：
+
+- 优先用 LSPosed 的文件服务直接读模块的 SharedPreferences（不需要唤醒模块进程）；
+- 直读不可用时才回退到 ContentProvider。
+
+如果「Hook 已连接」显示正常但弹窗不出现，多半是模块应用被系统冻结了，把模块加入自启动白名单即可。
+
+## 调试入口
+
+不依赖 LSPosed 注入，直接验证弹窗渲染与计时：
+
+```bash
+adb shell am start -n com.example.selfxposed/.MainActivity \
+  --ez preview_popup true \
+  --es preview_text "测试文字" \
+  --ei preview_show_ms 5000 --ei preview_fade_ms 1000
+```
 
 ## 安全提示
-仅对你有权修改、且已明确勾选作用域的应用使用。此项目源码不包含目标应用的修改包或私有数据。
 
+Provider 按 LSPosed 的注入模型必须是 `exported=true`，因此对已安装应用可读可写。
+它只存本模块的界面配置与日志，没有敏感数据；但仍建议只在自己的设备上使用，
+不要把它当作安全边界。
 
-## 优化版 8 说明
-- 目标应用卡片严格划分为左右等宽区域：左半区进入目标设置，右半区只用于开关。
-- 将 versionCode/versionName 更新为 8 / 2.0.8，便于识别新构建。
-- Provider authority 使用 `${applicationId}.config`，应解析为 `com.example.selfxposed.config`。
-- 需要在 Android Studio 重新构建并安装新 APK；本压缩包尚未在本环境完成 Android Gradle 编译或真机验证。
+## 版本
+
+- 2.1.0（versionCode 9）：自绘弹窗、多应用、页面拆分、图标与主题。
+- 2.0.x（versionCode 8）：单目标、系统 Toast、单文件 Activity。

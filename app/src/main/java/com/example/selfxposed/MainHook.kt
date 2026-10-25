@@ -2,6 +2,8 @@ package com.example.selfxposed
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
@@ -10,6 +12,7 @@ import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -79,23 +82,55 @@ class MainHook : IXposedHookLoadPackage {
         val showMs = cfg.optInt("showMs", 5000)
         val fadeMs = cfg.optInt("fadeMs", 1000)
 
+        // 启动页（Splash / 欢迎页）会在 1~2 秒后被主界面替换。
+        // 在它上面挂弹窗会因为窗口销毁而“闪一下再出现”，所以直接跳过，等真正的界面。
+        if (isTransientActivity(activity)) {
+            logFramework("自用模块: $pkg 跳过启动页 ${activity.javaClass.simpleName}")
+            return
+        }
+
+        // 已经显示中的弹窗：跟随到新的 Activity，保留剩余时间，不重置计时。
+        if (PopupController.isShowing(pkg)) {
+            PopupController.show(activity, pkg, text, showMs, fadeMs)
+            return
+        }
+
+        // 刚发生过 Activity 切换时，把待显示任务改挂到当前 Activity 上。
+        pendingShows.remove(pkg)?.let { pendingHandler.removeCallbacks(it) }
+
         val now = SystemClock.uptimeMillis()
         val last = lastShownAt[pkg] ?: 0L
         // 冷却时间覆盖一次完整展示，避免快速切换 Activity 时连续重弹。
         val cooldown = maxOf(4_000L, showMs.toLong() + fadeMs.toLong() + 1_500L)
-        if (now - last < cooldown) {
-            if (PopupController.isShowing(pkg)) {
-                // 弹窗还在屏幕上，只是宿主 Activity 变了：迁移过去并保留剩余时间。
-                PopupController.show(activity, pkg, text, showMs, fadeMs)
-            }
-            return
-        }
+        if (now - last < cooldown) return
 
         lastShownAt[pkg] = now
-        val shown = PopupController.show(activity, pkg, text, showMs, fadeMs)
-        logFramework("自用模块: $pkg 显示弹窗 attached=$shown showMs=$showMs fadeMs=$fadeMs")
-        logOnce(detectedLogged, pkg) { writeLog(activity, pkg, "已在 $pkg 显示弹窗") }
-        writeLog(activity, pkg, "弹窗文本：$text（显示 ${showMs}ms，淡出 ${fadeMs}ms）")
+        scheduleShow(activity, pkg, text, showMs, fadeMs)
+    }
+
+    /**
+     * 延迟一小段时间再真正挂载弹窗：如果这期间界面又被替换（常见于启动页 → 主界面），
+     * 新的 resume 会取消这次任务并重新计时，最终只会在稳定下来的界面上弹一次。
+     */
+    private fun scheduleShow(activity: Activity, pkg: String, text: String, showMs: Int, fadeMs: Int) {
+        val runnable = Runnable {
+            pendingShows.remove(pkg)
+            if (activity.isFinishing || activity.isDestroyed) return@Runnable
+            val attached = PopupController.show(activity, pkg, text, showMs, fadeMs)
+            writeLog(
+                activity, pkg,
+                "弹窗 attached=$attached activity=${activity.javaClass.simpleName} showMs=$showMs fadeMs=$fadeMs"
+            )
+            logFramework("自用模块: $pkg 显示弹窗 attached=$attached showMs=$showMs fadeMs=$fadeMs")
+            logOnce(detectedLogged, pkg) { writeLog(activity, pkg, "已在 $pkg 显示弹窗") }
+        }
+        pendingShows[pkg] = runnable
+        pendingHandler.postDelayed(runnable, SETTLE_DELAY_MS)
+    }
+
+    private fun isTransientActivity(activity: Activity): Boolean {
+        val name = activity.javaClass.simpleName.lowercase(Locale.ROOT)
+        return TRANSIENT_HINTS.any { name.contains(it) }
     }
 
     /**
@@ -116,7 +151,9 @@ class MainHook : IXposedHookLoadPackage {
 
         if (!raw.isNullOrBlank()) {
             return try {
-                ConfigClient.merge(JSONObject(raw))
+                val merged = ConfigClient.merge(JSONObject(raw))
+                logFramework("自用模块: $pkg 配置来自模块偏好文件")
+                merged
             } catch (t: Throwable) {
                 logFramework("自用模块: 配置解析失败，$pkg：${describe(t)}")
                 null
@@ -172,10 +209,18 @@ class MainHook : IXposedHookLoadPackage {
     }
 
     companion object {
+        private const val SETTLE_DELAY_MS = 400L
+        private val TRANSIENT_HINTS =
+            listOf("splash", "welcome", "guide", "loading", "launch", "advert", "startup")
+
         private val detectedLogged = ConcurrentHashMap.newKeySet<String>()
         private val disabledLogged = ConcurrentHashMap.newKeySet<String>()
         private val popupOffLogged = ConcurrentHashMap.newKeySet<String>()
         private val failedLogged = ConcurrentHashMap.newKeySet<String>()
         private val lastShownAt = ConcurrentHashMap<String, Long>()
+        private val pendingShows = ConcurrentHashMap<String, Runnable>()
+
+        // 注意：不能在类初始化时 new Handler —— LSPosed 加载模块时主线程 Looper 可能还没就绪。
+        private val pendingHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
     }
 }
