@@ -100,5 +100,10 @@ Provider 按 LSPosed 的注入模型必须是 `exported=true`，因此对已安�
 
 ## 版本
 
-- 2.1.0（versionCode 9）：自绘弹窗、多应用、页面拆分、图标与主题。
+- 2.1.1（versionCode 10）：补齐传统密度 PNG 图标，修复第三方工具（LSPosed 模块列表）显示默认图标。
+- 2.1.0（versionCode 9）：自绘弹窗、多应用、页面拆分、后台常驻与自启动。
 - 2.0.x（versionCode 8）：单目标、系统 Toast、单文件 Activity。
+
+> 图标相关：启动器用 `mipmap-anydpi-v26` 的自适应图标，同时保留 `mipmap-*dpi` 的 PNG
+> 供按密度取图的第三方工具使用。LSPosed 管理器会按 versionCode 缓存模块图标，
+> 更新图标后需要提升 versionCode（或重启管理器）才会刷新。
