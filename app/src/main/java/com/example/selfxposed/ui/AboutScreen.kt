@@ -28,6 +28,7 @@ class AboutScreen(private val host: ScreenHost) {
             addView(infoRow("版本号", host.versionCode().toString()))
             addView(infoRow("包名", ui.activity.packageName))
             addView(infoRow("目标应用", "${host.repo.targets().size} 个"))
+            addView(infoRow("开发者", "DAY（开发者） · DSH（AI 工具）"))
         })
 
         into.addView(ui.entryRow("项目地址", "github.com/gulangday/LSPosedSelfModule") { openGithub() })

@@ -21,7 +21,10 @@ class UpdateBlockScreen(
 
     fun render(into: LinearLayout) {
         val cfg = repo.config(pkg)
-        val ub = cfg.optJSONObject("updateBlock") ?: JSONObject()
+        val canRoot = WorkMode.canUseRoot(ui.activity)
+        // 一次 shell 读回全部状态（带 30 秒缓存），避免多次 IPC 卡顿
+        val state = if (canRoot) com.example.selfxposed.TargetFiles.load(pkg) else com.example.selfxposed.TargetFiles.TargetState()
+        val blockOn = canRoot && state.isOn(com.example.selfxposed.Features.BLOCK)
 
         into.addView(ui.backRow("‹  功能") { host.openFeatures() })
 
@@ -29,13 +32,13 @@ class UpdateBlockScreen(
         into.addView(ui.card(Palette.hero).apply {
             elevation = 0f
             addView(ui.label("怎么拦截弹窗", 12, Palette.accent, true))
-            addView(ui.label("用悬浮球点选，不会挡住弹窗", 19, Palette.ink, true).apply {
+            addView(ui.label(if (blockOn) "已启用" else "默认关闭，先打开下面的开关", 19, Palette.ink, true).apply {
                 setPadding(0, ui.dp(6), 0, ui.dp(6))
             })
             addView(ui.label(
-                "1. 进入目标应用，点屏幕右侧的「拦」悬浮球\n" +
-                    "2. 再点那个要拦的弹窗\n" +
-                    "3. 底部会显示它的标题、类型、所属界面，点「拦截这个」即可\n\n" +
+                "1. 打开「启用拦截」开关\n" +
+                    "2. 进入目标应用，点屏幕右侧的「拦」悬浮球\n" +
+                    "3. 再点那个要拦的弹窗，底部会显示它的标题、类型、所属界面，点「拦截这个」即可\n\n" +
                     "之后命中规则的弹窗会自动关闭并保存截图；" +
                     "长按被拦截后的提示条可以修改规则。",
                 12, Palette.muted, false
@@ -45,33 +48,64 @@ class UpdateBlockScreen(
         into.addView(ui.sectionTitle("拦截弹窗 · $name"))
         into.addView(ui.label(pkg, 12, Palette.muted, false).apply { setPadding(ui.dp(2), 0, 0, 0) })
 
-        val enableSwitch = Switch(ui.activity).apply {
-            text = "启用拦截"
-            textSize = 14f
-            isChecked = ub.optBoolean("enabled", false)
-            setPadding(0, ui.dp(4), 0, ui.dp(4))
+        val enableChip = ui.statusChip(blockOn) { checked ->
+            if (!canRoot) {
+                host.toast("需要 Root / Shizuku 模式")
+                false
+            } else {
+                val ok = com.example.selfxposed.Features.setRemote(pkg, com.example.selfxposed.Features.BLOCK, checked)
+                com.example.selfxposed.TargetFiles.invalidate(pkg)
+                host.toast(
+                    if (ok) ("已" + (if (checked) "启用" else "关闭") + "，重启目标应用生效")
+                    else "写入失败，检查 Root / Shizuku 授权"
+                )
+                ok
+            }
         }
-        into.addView(ui.card().apply { addView(enableSwitch) })
-
-        into.addView(ui.actionCard("保存设置", "只影响 $name") {
-            val block = JSONObject()
-            block.put("enabled", enableSwitch.isChecked)
-            cfg.put("updateBlock", block)
-            repo.saveConfig(pkg, cfg)
-            repo.log(pkg, "拦截弹窗配置已保存：启用=${enableSwitch.isChecked}")
-            host.toast("已保存")
+        into.addView(ui.card().apply {
+            val row = LinearLayout(ui.activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+            }
+            row.addView(
+                ui.label("启用拦截", 14, Palette.ink, true),
+                LinearLayout.LayoutParams(0, -2, 1f)
+            )
+            row.addView(enableChip)
+            addView(row)
+            if (!canRoot) addView(ui.label("需要 Root / Shizuku 模式才能写入目标应用", 11, Palette.muted, false))
         })
 
-        // ---- 以下功能都需要写目标应用的数据，没有 root 能力时置灰 ----
-        val canRoot = WorkMode.canUseRoot(ui.activity)
-        // 拦截方式：ball（悬浮窗）/ auto（自动拦截）
-        var pickMode = if (canRoot) {
-            com.example.selfxposed.RootShell.exec(
-                "cat /data/data/$pkg/files/selfxposed_pick_mode.conf 2>/dev/null"
-            ).trim().ifBlank { "ball" }
-        } else {
-            "ball"
+        // Toast 拦截：只能拦目标应用自己弹的 Toast（系统/其他应用弹的拦不到）
+        val toastChip = ui.statusChip(canRoot && state.isOn(com.example.selfxposed.Features.TOAST)) { checked ->
+            if (!canRoot) {
+                host.toast("需要 Root / Shizuku 模式")
+                false
+            } else {
+                val ok = com.example.selfxposed.Features.setRemote(pkg, com.example.selfxposed.Features.TOAST, checked)
+                com.example.selfxposed.TargetFiles.invalidate(pkg)
+                host.toast(if (ok) "已保存，重启目标应用生效" else "写入失败，检查 Root / Shizuku 授权")
+                ok
+            }
         }
+        into.addView(ui.card().apply {
+            val row = LinearLayout(ui.activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+            }
+            row.addView(
+                ui.label("拦截 Toast 提示", 14, Palette.ink, true),
+                LinearLayout.LayoutParams(0, -2, 1f)
+            )
+            row.addView(toastChip)
+            addView(row)
+            addView(ui.label("按「关键字」匹配；只能拦目标应用自己弹的 Toast", 11, Palette.muted, false).apply {
+                setPadding(0, ui.dp(4), 0, 0)
+            })
+        })
+
+        // 拦截方式：ball（悬浮窗）/ auto（自动拦截），来自上面合并读取的结果
+        var pickMode = if (canRoot) state.pickMode else "ball"
 
         into.addView(ui.sectionTitle("拦截方式"))
         if (canRoot) {
@@ -84,11 +118,9 @@ class UpdateBlockScreen(
                 setPadding(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3))
             }
 
-            // 悬浮球卡片（可用）
+            // 悬浮球卡片（可用）；关闭状态来自合并读取
             val path = "/data/data/$pkg/files/selfxposed_ball_off"
-            val ballOff = com.example.selfxposed.RootShell.exec("test -f $path && echo yes").contains("yes")
-            val ballSwitch = Switch(ui.activity).apply { isChecked = !ballOff }
-            ballSwitch.setOnCheckedChangeListener { _, checked ->
+            val ballChip = ui.statusChip(!state.ballOff) { checked ->
                 if (checked) {
                     com.example.selfxposed.RootShell.exec("rm -f $path")
                     host.toast("悬浮球已开启，重启目标应用后显示")
@@ -96,6 +128,8 @@ class UpdateBlockScreen(
                     com.example.selfxposed.RootShell.exec("touch $path")
                     host.toast("悬浮球已关闭")
                 }
+                com.example.selfxposed.TargetFiles.invalidate(pkg)
+                true
             }
             val ballCard = ui.card().apply {
                 val row = LinearLayout(ui.activity).apply {
@@ -106,19 +140,19 @@ class UpdateBlockScreen(
                     ui.label("悬浮球", 15, Palette.ink, true),
                     LinearLayout.LayoutParams(0, -2, 1f)
                 )
-                row.addView(ballSwitch)
+                row.addView(ballChip)
                 addView(row)
                 addView(ui.label("长按悬浮球也可以关闭它", 11, Palette.muted, false).apply {
                     setPadding(0, ui.dp(4), 0, 0)
                 })
             }
-            val ballLocked = ui.lockedCard("悬浮球", "选择「悬浮窗」方式后启用")
+            val ballLocked = ui.lockedCard("悬浮球", "选择「悬浮窗」方式后启用", tag = "需切到悬浮窗")
 
             // 提示样式卡片（可用 / 置灰）
             val hintCard = ui.actionCard("拦截提示样式", "字号、位置、背景色") {
                 host.openHintStyle(pkg, name)
             }
-            val hintLocked = ui.lockedCard("拦截提示样式", "选择「自动拦截」方式后启用")
+            val hintLocked = ui.lockedCard("拦截提示样式", "选择「自动拦截」方式后启用", tag = "需切到自动拦截")
 
             fun applyMode(chosen: Int) {
                 segItems.forEachIndexed { index, item ->
@@ -150,6 +184,7 @@ class UpdateBlockScreen(
                         com.example.selfxposed.RootShell.exec(
                             "mkdir -p /data/data/$pkg/files; echo $pickMode > /data/data/$pkg/files/selfxposed_pick_mode.conf"
                         )
+                        com.example.selfxposed.TargetFiles.invalidate(pkg)
                         applyMode(index)
                         host.toast("已切换为${options[index]}，重启目标应用生效")
                     }
@@ -189,19 +224,19 @@ class UpdateBlockScreen(
             into.addView(ui.lockedCard("关键字", "自定义要拦截的文字，命中即拦"))
         }
 
-        // 提示样式只在「自动拦截」方式下才有意义（悬浮窗模式不显示拦截提示）
-        if (canRoot) {
-            // 两张卡片在拦截方式区块里创建并切换可见性，这里占位交给 applyMode
-        } else {
-            into.addView(ui.lockedCard("拦截提示样式", "需要 root 能力"))
+        // 提示样式：非 Root 模式下预设仍可用（走模块配置），只有自定义样式需要特权通道
+        if (!canRoot) {
+            into.addView(ui.actionCard("拦截提示样式", "预设可用；自定义样式需要 Root / Shizuku") {
+                host.openHintStyle(pkg, name)
+            })
         }
 
         if (canRoot) {
-            into.addView(ui.actionCard("查看 / 清除规则（需要 root）", "该应用当前学到的拦截规则") {
+            into.addView(ui.actionCard("查看 / 清除规则（需要 Root / Shizuku）", "该应用当前学到的拦截规则") {
                 host.openDialogRules(pkg, name)
             })
         } else {
-            into.addView(ui.lockedCard("查看 / 清除规则（需要 root）", "该应用当前学到的拦截规则"))
+            into.addView(ui.lockedCard("查看 / 清除规则（需要 Root / Shizuku）", "该应用当前学到的拦截规则"))
         }
 
         into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })

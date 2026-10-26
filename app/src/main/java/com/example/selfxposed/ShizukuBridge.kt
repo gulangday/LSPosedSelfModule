@@ -75,22 +75,30 @@ object ShizukuBridge {
         binding = true
         try {
             val args = Shizuku.UserServiceArgs(componentName)
-                .daemon(false)
+                // daemon=true：复用同一个常驻服务进程。
+                // daemon=false 会每次绑定都新建一个 remote 进程，反复打开模块会堆积上百个，
+                // 吃光内存后系统开始杀别的应用（表现为"相册闪退"）。
+                .daemon(true)
                 .processNameSuffix("remote")
                 .debuggable(false)
                 .version(1)
             Shizuku.bindUserService(args, connection)
-            android.util.Log.i("SelfXposedRoot", "shizuku bind 已发起")
+            android.util.Log.i("SelfXposedRoot", "shizuku bind 已发起（daemon 复用）")
         } catch (t: Throwable) {
             binding = false
             android.util.Log.i("SelfXposedRoot", "shizuku bind 失败：${t.javaClass.simpleName}: ${t.message}")
         }
     }
 
-    /** 确保已绑定，必要时等待（读取规则前调用）。 */
+    @Volatile
+    private var waitedOnce = false
+
+    /** 确保已绑定；整个进程只在第一次真正等待，之后快速返回，避免每个命令卡 2 秒。 */
     fun ensureBound(timeoutMs: Long = 2500L): Boolean {
         if (remote != null) return true
         savedComponent?.let { bind(it) }
+        if (waitedOnce) return remote != null
+        waitedOnce = true
         val end = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < end) {
             if (remote != null) return true

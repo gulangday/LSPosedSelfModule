@@ -29,9 +29,7 @@ class DialogRulesScreen(
     )
 
     fun render(into: LinearLayout) {
-        into.addView(ui.backRow("‹  返回") {
-            if (onlyPackage != null) host.openApp(onlyPackage, repo.label(onlyPackage)) else host.openFeatures()
-        })
+        into.addView(ui.backRow("‹  返回") { host.backFromRules() })
         into.addView(ui.sectionTitle(if (onlyPackage != null) "弹窗规则 · ${repo.label(onlyPackage)}" else "弹窗规则"))
         into.addView(ui.hint("规则是模块在目标应用里学习到的，存在目标应用自己的数据目录，需要 root 能力才能查看和清除。"))
 

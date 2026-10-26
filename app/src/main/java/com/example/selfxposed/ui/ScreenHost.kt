@@ -17,6 +17,7 @@ interface ScreenHost {
     fun openApp(pkg: String, name: String)
     fun openUpdateBlock(pkg: String, name: String)
     fun openDialogRules(pkg: String?, name: String?)
+    fun backFromRules()
     fun openHintStyle(pkg: String?, name: String?)
     fun openKeywords(pkg: String, name: String)
     fun openLogs(pkg: String, name: String)

@@ -88,6 +88,35 @@ class Ui(val activity: Activity) {
         layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) }
     }
 
+    /**
+     * 开关状态的标签形式：已开启（绿）/ 未开启（灰），点击切换。
+     * onChange 返回 true 才更新显示（写入失败时保持原状态）。
+     */
+    fun statusChip(initial: Boolean, onChange: (Boolean) -> Boolean): TextView {
+        var on = initial
+        val view = chip(
+            if (on) "已开启" else "未开启",
+            if (on) Palette.success else Palette.muted,
+            if (on) Palette.successSoft else Palette.surfaceMuted
+        )
+        // 放在横向行的右侧：去掉 chip 默认的上边距，保证宽度完整不被裁切
+        view.layoutParams = LinearLayout.LayoutParams(-2, -2)
+        fun render(checked: Boolean) {
+            view.text = if (checked) "已开启" else "未开启"
+            view.setTextColor(if (checked) Palette.success else Palette.muted)
+            view.background = rounded(if (checked) Palette.successSoft else Palette.surfaceMuted, 10)
+        }
+        view.isClickable = true
+        view.setOnClickListener {
+            val next = !on
+            if (onChange(next)) {
+                on = next
+                render(next)
+            }
+        }
+        return view
+    }
+
     fun icon(drawable: Drawable, sizeDp: Int): ImageView = ImageView(activity).apply {
         setImageDrawable(drawable)
         scaleType = ImageView.ScaleType.FIT_CENTER
@@ -353,8 +382,83 @@ class Ui(val activity: Activity) {
         dialog.show()
     }
 
+    /**
+     * 带状态标签的列表选择框：左边名称，右边圆角状态标签（已开启/未开启）。
+     */
+    fun statusListDialog(
+        title: String,
+        items: List<Triple<String, String, Boolean>>,
+        onPick: (Int) -> Unit,
+        cancelText: String = "取消"
+    ) {
+        val dialog = Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar)
+        val wrapper = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(24), dp(28), dp(24))
+            setBackgroundColor(Color.argb(120, 0, 0, 0))
+            isClickable = true
+            setOnClickListener { dialog.dismiss() }
+        }
+        val cardView = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(18), dp(16), dp(10))
+            background = rounded(Palette.surface, 20)
+            elevation = dp(8).toFloat()
+            isClickable = true
+        }
+        cardView.addView(label(title, 16, Palette.ink, true).apply {
+            setPadding(dp(4), 0, dp(4), dp(8))
+        })
+
+        items.forEachIndexed { index, (name, status, on) ->
+            val row = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = rounded(Palette.background, 12)
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
+                isClickable = true
+            }
+            row.addView(
+                label(name, 15, Palette.ink, false),
+                LinearLayout.LayoutParams(0, -2, 1f)
+            )
+            val chipView = label(
+                status,
+                11,
+                if (on) Palette.success else Palette.muted,
+                true
+            ).apply {
+                setPadding(dp(10), dp(4), dp(10), dp(4))
+                background = rounded(
+                    if (on) Palette.successSoft else Palette.surfaceMuted,
+                    12
+                )
+            }
+            row.addView(chipView)
+            pressable(row, {
+                dialog.dismiss()
+                onPick(index)
+            })
+            cardView.addView(row)
+        }
+
+        val cancel = label(cancelText, 14, Palette.muted, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(11), dp(16), dp(11))
+        }
+        pressable(cancel, { dialog.dismiss() })
+        cardView.addView(cancel, LinearLayout.LayoutParams(-1, -2))
+
+        wrapper.addView(cardView, LinearLayout.LayoutParams(-1, -2))
+        dialog.setContentView(wrapper)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
+    }
+
     /** 需要 root 但当前是非 Root 模式时的置灰入口（明显不可用）。 */
-    fun lockedCard(title: String, subtitle: String): View {
+    fun lockedCard(title: String, subtitle: String, tag: String = "需要 Root / Shizuku 模式"): View {
         val disabledInk = Color.rgb(158, 155, 165)
         val container = card(Palette.surfaceMuted)
         container.isEnabled = false
@@ -363,7 +467,7 @@ class Ui(val activity: Activity) {
         container.addView(label(subtitle, 12, disabledInk, false).apply {
             setPadding(0, dp(5), 0, 0)
         })
-        container.addView(label("🔒 需要 root", 11, disabledInk, true).apply {
+        container.addView(label("🔒 $tag", 11, disabledInk, true).apply {
             setPadding(dp(8), dp(3), dp(8), dp(3))
             background = rounded(Color.rgb(220, 219, 224), 10)
             layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) }

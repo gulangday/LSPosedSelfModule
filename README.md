@@ -107,3 +107,98 @@ Provider 按 LSPosed 的注入模型必须是 `exported=true`，因此对已安�
 > 图标相关：启动器用 `mipmap-anydpi-v26` 的自适应图标，同时保留 `mipmap-*dpi` 的 PNG
 > 供按密度取图的第三方工具使用。LSPosed 管理器会按 versionCode 缓存模块图标，
 > 更新图标后需要提升 versionCode（或重启管理器）才会刷新。
+
+## 新增功能必读（踩坑清单）
+
+以下是这个项目一路踩出来的问题，**新增功能前先过一遍**，能省很多返工。
+
+### 1. 功能必须"默认关闭 + 按应用开启"
+
+- 每个功能对每个目标应用一个开关，状态写在**目标应用本地**的
+  `files/selfxposed_features.conf`（`Features` 类，形如 `block=1`、`toast=0`）。
+- 文件不存在 = 全部关闭。新增功能时：
+  1. `Features` 加常量（如 `const val XXX = "xxx"`）；
+  2. hook 侧用 `Features.isOn(context, XXX)` 判断，**默认不做事**；
+  3. 功能页放「启用」开关，用 `Features.setRemote(pkg, XXX, checked)` 写入。
+- **不要**再往模块配置（Provider）里加"总开关"——targetSdk 30+ 的应用读不到模块 Provider。
+
+### 2. 需要 hook 读取的数据，必须落在目标应用自己的目录
+
+`/data/data/<目标包>/files/*` 或 `shared_prefs/*`，因为：
+
+- 模块 Provider 对 targetSdk 30+ 的应用不可见（实测 `Unknown authority`）；
+- LSPosed 的文件服务读模块目录会返回空流；
+- 只有"写自己目录、hook 在自己进程读"这条路是通的。
+
+新增数据文件时同步更新 `AGENTS.md` 第 3 节的文件清单。
+
+### 3. 读取状态要"合并 + 缓存 + 失败不缓存"
+
+- 一个页面要读多个状态时，用 `TargetFiles.load(pkg)` 的**一条命令**全部取回，
+  不要每个状态各跑一次 root/Shizuku（每次 IPC 50–150ms，Root 模式更慢）。
+- **失败结果绝不能缓存**：Shizuku 未绑定完成时返回空串，如果缓存了空结果，
+  接下来 30 秒内所有页面都会显示"未开启"（这个 bug 真的发生过）。
+  现在的写法是：输出里带 `@@F` 标记才缓存。
+
+### 4. 新页面要"四处注册"
+
+新增一个页面时，`MainActivity` 里必须同时改：
+
+1. `PAGE_*` 常量；
+2. `renderPage()` 分支；
+3. `handleBack()` 的返回目标；
+4. `ScreenHost` 接口 + `MainActivity` 实现。
+
+少一处就会出现"能进不能退"或"返回跑到别处"。
+
+### 5. 子页面要记住"从哪来的"
+
+- 日志页：`logsBackPage`
+- 弹窗规则页：`rulesBackPage`
+
+**不要**用"有没有包名"来猜返回目标——从「拦截弹窗」进来和从「应用设置」进来，
+包名都有，猜不对就会退错页面。
+
+### 6. 窗口层级：Dialog 是独立窗口，会吞掉背后的触摸
+
+- 弹窗出现时，挂在 Activity 上的悬浮球点不到（触摸被 Dialog 窗口吃掉）。
+- 正确做法：弹窗出现时把球挂到**弹窗的 decorView** 上，同时隐藏 Activity 上的那个，
+  弹窗 dismiss 再恢复。
+- 描边要框**内容卡片**（`decorView` 第一个子 View 里面积最大、有背景的那个），
+  不能框整个 decorView（它是全屏大小的，会框到游戏画面上）。
+
+### 7. 自动拦截不要"闪一下"
+
+为了截图必须先让弹窗完成布局，直接拦截会导致用户看到弹窗闪一下。
+做法：`Dialog.show` 前把窗口 `alpha` 设为 0，布局照常、`draw` 照常，用户看不到。
+
+### 8. 截图去重
+
+同一个弹窗可能被 `show()` 多次，且每次启动都会再弹一次：
+
+- 内容哈希 5 秒内不重复；
+- 同标题只保留最新一张（保存新图前删掉同标题的旧 png/txt）。
+
+### 9. Shizuku 的 UserService 写法
+
+- 类必须**直接继承 AIDL 的 `Stub`**（本身是 Binder），
+  **不能**写成 `android.app.Service`，否则 `ClassCastException: cannot be cast to IBinder`。
+- 首次绑定约 4 秒，页面要显示"正在连接"并在后台等待后自动刷新。
+- `ensureBound` 只在整个进程第一次真正等待，之后快速返回，避免每个命令卡 2 秒。
+
+### 10. 平台限制（不要试图绕过）
+
+- `targetSdk 30+` 应用受包可见性限制，看不到模块 Provider、也看不到 `su` 的某些路径。
+- 被隐藏 root 的模块（Shamiko / DenyList）会把 `su` 从应用视图里摘掉，
+  这时必须走 Shizuku 通道。
+- Toast 拦截只能拦**目标应用自己**弹的；其他应用/系统 UI 弹的拦不到。
+- Unity 内部绘制的 UI 不是 Android Dialog，弹窗守卫识别不了。
+
+### 11. 工程习惯
+
+- **禁止用 PowerShell / sed 批量替换源码**（编码会写坏文件，踩过一次）；
+  改动一律用编辑工具逐处修改。
+- 静态 `Handler`、`SharedPreferences` 等要用 `by lazy` 或在方法内创建，
+  不能在 `MainHook.<clinit>` 里初始化（会 NPE）。
+- 所有 hook 和文件操作必须包 `try/catch`，异常只记日志，不能影响目标应用。
+- 主线程不要做 root 命令或文件 IO，页面先渲染缓存值，后台读好再刷新。

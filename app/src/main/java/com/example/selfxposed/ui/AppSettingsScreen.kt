@@ -8,6 +8,7 @@ import android.widget.LinearLayout
 import android.widget.Switch
 import android.widget.TextView
 import com.example.selfxposed.PopupController
+import com.example.selfxposed.WorkMode
 import java.util.Locale
 
 /** 单个目标应用的配置页：文字、开关、显示/淡出时长、预览与保存。 */
@@ -27,13 +28,44 @@ class AppSettingsScreen(
         into.addView(ui.label(pkg, 12, Palette.muted, false).apply { setPadding(ui.dp(2), 0, 0, 0) })
         into.addView(ui.hint("修改后点「保存设置」；预览不会写入配置。"))
 
-        val popupSwitch = Switch(ui.activity).apply {
-            text = "启用提示通知"
-            textSize = 14f
-            isChecked = cfg.optBoolean("popupEnabled", true)
-            setPadding(0, ui.dp(4), 0, ui.dp(4))
+        val canRoot = WorkMode.canUseRoot(ui.activity)
+        // 有 root/Shizuku 时开关写在目标应用本地；否则存模块配置（只对 targetSdk < 30 的应用生效）
+        val popupOn = if (canRoot) {
+            com.example.selfxposed.TargetFiles.load(pkg).isOn(com.example.selfxposed.Features.POPUP)
+        } else {
+            cfg.optBoolean("popupEnabled", false)
         }
-        into.addView(ui.card().apply { addView(popupSwitch) })
+        val popupChip = ui.statusChip(popupOn) { checked ->
+            if (canRoot) {
+                val ok = com.example.selfxposed.Features.setRemote(pkg, com.example.selfxposed.Features.POPUP, checked)
+                com.example.selfxposed.TargetFiles.invalidate(pkg)
+                host.toast(
+                    if (ok) ("已" + (if (checked) "启用" else "关闭") + "，重启目标应用生效")
+                    else "写入失败，检查 Root / Shizuku 授权"
+                )
+                ok
+            } else {
+                cfg.put("popupEnabled", checked)
+                repo.saveConfig(pkg, cfg)
+                host.toast("已保存（非 Root 模式，仅对 targetSdk < 30 的应用生效）")
+                true
+            }
+        }
+        into.addView(ui.card().apply {
+            val row = LinearLayout(ui.activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(
+                ui.label("启用提示通知", 14, Palette.ink, true),
+                LinearLayout.LayoutParams(0, -2, 1f)
+            )
+            row.addView(popupChip)
+            addView(row)
+            if (!canRoot) {
+                addView(ui.label("非 Root 模式：只对 targetSdk < 30 的应用生效", 11, Palette.muted, false))
+            }
+        })
 
         val textEdit = EditText(ui.activity).apply {
             hint = "弹窗文字"
@@ -83,7 +115,6 @@ class AppSettingsScreen(
 
         into.addView(ui.actionCard("保存设置", "只影响 $name") {
             val text = textEdit.text.toString().ifBlank { DEFAULT_TEXT }
-            cfg.put("popupEnabled", popupSwitch.isChecked)
             cfg.put("popupText", text)
             cfg.put("showMs", showMs)
             cfg.put("fadeMs", fadeMs)

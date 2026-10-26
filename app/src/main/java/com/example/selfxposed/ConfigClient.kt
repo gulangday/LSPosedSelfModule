@@ -49,7 +49,7 @@ object ConfigClient {
 
     fun defaults(): JSONObject = JSONObject()
         .put("enabled", false)
-        .put("popupEnabled", true)
+        .put("popupEnabled", false)
         .put("popupText", "你好")
         .put("showMs", 5000)
         .put("fadeMs", 1000)

@@ -48,12 +48,22 @@ class MainActivity : Activity(), ScreenHost {
     private lateinit var navSettings: TextView
 
     private var currentPage = PAGE_HOME
+
+    /** 每个页面各自的滚动位置，返回上一级时恢复到离开时的位置。 */
+    private val pageScrollY = HashMap<String, Int>()
+
+    /** 启动读取阶段：此时不要被 onResume 提前渲染主页。 */
+    private var booting = true
     private var previousPage = PAGE_HOME
     private var selectedPackage = ""
     private var selectedName = ""
     private var logsPackage = ""
     private var logsName = ""
     private var logsBackPage = PAGE_SETTINGS
+
+    /** 弹窗规则页的来源页，返回时回到它。 */
+    private var rulesBackPage = PAGE_FEATURES
+
     private var systemBackCallback: OnBackInvokedCallback? = null
 
     @Suppress("DEPRECATION")
@@ -65,15 +75,35 @@ class MainActivity : Activity(), ScreenHost {
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
 
         buildShell()
-        renderPage(PAGE_HOME, animate = false)
 
-        // Shizuku 已授权时绑定远程服务，后续 root 命令优先走它
-        if (ShizukuBridge.hasPermission()) {
-            ShizukuBridge.bind(android.content.ComponentName(this, RemoteService::class.java))
-        }
-
-        // 调试入口：--es page settings|features|permissions|about|help，直接打开指定页面。
-        applyPageExtra(intent)
+        // 先显示"正在读取"，等 Shizuku 绑定 + 状态读完再渲染主页，
+        // 避免先出现"未开启"再跳变（慢一点但显示正确、不闪）。
+        showLoadingPlaceholder()
+        Thread {
+            try {
+                if (ShizukuBridge.hasPermission()) {
+                    ShizukuBridge.bind(android.content.ComponentName(this, RemoteService::class.java))
+                    ShizukuBridge.ensureBound(6_000L)
+                }
+                if (WorkMode.canUseRoot(this)) {
+                    repo.targets().forEach { pkg ->
+                        try {
+                            TargetFiles.load(pkg, force = true)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                booting = false
+                enterHomeWithTransition()
+                applyPageExtra(intent)
+                // 启动完成后立刻做一次工作模式检查（onResume 时还在 booting，会被跳过）
+                checkWorkModeHealth()
+            }
+        }.start()
 
         // 调试/自动化入口：--ez keep_alive true 等价于在设置里打开「后台常驻」。
         intent?.takeIf { it.hasExtra(EXTRA_KEEP_ALIVE) }?.let {
@@ -100,8 +130,96 @@ class MainActivity : Activity(), ScreenHost {
         }
     }
 
+    /** 启动时的读取页：和启动图标同一层，读完后淡入主页。 */
+    private fun showLoadingPlaceholder() {
+        try {
+            content.removeAllViews()
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(24), ui.dp(24), ui.dp(24), ui.dp(24))
+            }
+            val icon = try {
+                resources.getDrawable(R.mipmap.ic_launcher, null)
+            } catch (_: Throwable) {
+                null
+            }
+            if (icon != null) {
+                box.addView(ui.icon(icon, 88))
+            }
+            box.addView(ui.label("正在读取配置…", 16, Palette.ink, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, ui.dp(24), 0, 0)
+            })
+            content.addView(box)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 读取完成后从读取页淡入主页。 */
+    private fun enterHomeWithTransition() {
+        renderPage(PAGE_HOME, animate = false)
+        try {
+            content.alpha = 0f
+            content.scaleX = 0.97f
+            content.scaleY = 0.97f
+            content.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(320)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 工作模式健康检查：Shizuku / Root 出问题时提示一次。 */
+    private var lastModeCheckAt = 0L
+
+    private fun checkWorkModeHealth() {
+        val mode = WorkMode.get(this) ?: return
+        if (mode == WorkMode.NO_ROOT) return
+        val now = System.currentTimeMillis()
+        if (now - lastModeCheckAt < 10_000L) return
+        lastModeCheckAt = now
+        Thread {
+            val problem = try {
+                when (mode) {
+                    WorkMode.SHIZUKU -> when {
+                        !ShizukuBridge.isAlive() -> "Shizuku 没有运行，请先启动 Shizuku"
+                        !ShizukuBridge.hasPermission() -> "Shizuku 未授权给本模块，请在 Shizuku 里允许"
+                        else -> null
+                    }
+
+                    WorkMode.ROOT -> if (!RootShell.suExists()) {
+                        "root 不可用（su 可能被隐藏 root 的模块挡住了）"
+                    } else {
+                        null
+                    }
+
+                    else -> null
+                }
+            } catch (_: Throwable) {
+                null
+            }
+            if (problem != null) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    // 环境不可用时自动降级为非 Root 模式，避免一直停在失效模式上
+                    WorkMode.set(this, WorkMode.NO_ROOT)
+                    toast("$problem，已切换为非 Root 模式")
+                    if (currentPage == PAGE_SETTINGS) renderPage(PAGE_SETTINGS, animate = false)
+                }
+            }
+        }.start()
+    }
+
     override fun onResume() {
         super.onResume()
+        // 启动读取阶段不要提前渲染主页，否则会先闪出"未开启"再跳变
+        if (booting) return
+        if (::content.isInitialized) checkWorkModeHealth()
         // 回到主页时刷新一次，让 Hook 连接状态反映最新的握手记录。
         if (::content.isInitialized && currentPage == PAGE_HOME) {
             renderPage(PAGE_HOME, animate = false)
@@ -114,8 +232,7 @@ class MainActivity : Activity(), ScreenHost {
         applyPageExtra(intent)
     }
 
-    private fun applyPageExtra(from: Intent?) {
-        val page = from?.getStringExtra(EXTRA_PAGE) ?: return
+    private fun applyPageExtra(from: Intent?) {        val page = from?.getStringExtra(EXTRA_PAGE) ?: return
         val target = when (page) {
             "features" -> PAGE_FEATURES
             "update_block" -> {
@@ -336,6 +453,10 @@ class MainActivity : Activity(), ScreenHost {
 
     private fun renderPage(page: String, animate: Boolean) {
         val direction = if (page == PAGE_HOME && currentPage != PAGE_HOME) -1f else 1f
+        // 记住离开当前页时的滚动位置，回到该页时恢复
+        if (::content.isInitialized) {
+            pageScrollY[currentPage] = scroll.scrollY
+        }
         currentPage = page
         updateNav(page, animate)
 
@@ -350,7 +471,6 @@ class MainActivity : Activity(), ScreenHost {
             content.alpha = 1f
         }
 
-        scroll.scrollTo(0, 0)
         content.removeAllViews()
         when (page) {
             PAGE_HOME -> HomeScreen(this).render(content)
@@ -367,6 +487,10 @@ class MainActivity : Activity(), ScreenHost {
             PAGE_HELP -> HelpScreen(this).render(content)
             PAGE_PICKER -> PickerScreen(this).render(content)
         }
+        // 恢复该页面上次的滚动位置（新页面从顶部开始）
+        val target = pageScrollY[page] ?: 0
+        scroll.scrollTo(0, target)
+        scroll.post { scroll.scrollTo(0, target) }
     }
 
     // ---- ScreenHost ----
@@ -390,7 +514,13 @@ class MainActivity : Activity(), ScreenHost {
     override fun openDialogRules(pkg: String?, name: String?) {
         selectedPackage = pkg.orEmpty()
         selectedName = name.orEmpty()
+        rulesBackPage = currentPage
         renderPage(PAGE_DIALOG_RULES, animate = true)
+    }
+
+    /** 从弹窗规则页返回来源页。 */
+    override fun backFromRules() {
+        renderPage(rulesBackPage, animate = true)
     }
 
     override fun openHintStyle(pkg: String?, name: String?) {
@@ -437,10 +567,26 @@ class MainActivity : Activity(), ScreenHost {
 
     override fun openPicker() = renderPage(PAGE_PICKER, animate = true)
 
-    override fun refresh() = renderPage(currentPage, animate = false)
+    override fun refresh() {
+        // 记住滚动位置，刷新后恢复，避免每次操作都跳回顶部
+        val scrollY = scroll.scrollY
+        renderPage(currentPage, animate = false)
+        scroll.post { scroll.scrollTo(0, scrollY) }
+    }
+
+    /** 当前正在显示的提示，新的提示会先取消它，做到"覆盖"而不是排队。 */
+    private var currentToast: Toast? = null
+    private val toastHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun toast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        currentToast?.cancel()
+        val toast = Toast.makeText(this, message, Toast.LENGTH_SHORT)
+        currentToast = toast
+        toast.show()
+        // LENGTH_SHORT 约 2 秒，再续一次凑到约 5 秒
+        toastHandler.postDelayed({
+            if (currentToast === toast) toast.show()
+        }, 2_800L)
     }
 
     override fun versionName(): String = try {
@@ -470,8 +616,8 @@ class MainActivity : Activity(), ScreenHost {
             PAGE_HELP -> renderPage(if (previousPage == PAGE_SETTINGS) PAGE_SETTINGS else PAGE_HOME, animate = true)
             PAGE_PERMISSIONS, PAGE_ABOUT -> renderPage(PAGE_SETTINGS, animate = true)
             PAGE_UPDATE_BLOCK -> renderPage(PAGE_FEATURES, animate = true)
-            // 从某个应用的「拦截弹窗」进来的，退回该应用页；否则退回功能页
-            PAGE_DIALOG_RULES, PAGE_HINT_STYLE, PAGE_KEYWORDS -> renderPage(
+            PAGE_DIALOG_RULES -> backFromRules()
+            PAGE_HINT_STYLE, PAGE_KEYWORDS -> renderPage(
                 if (selectedPackage.isNotEmpty()) PAGE_UPDATE_BLOCK else PAGE_FEATURES,
                 animate = true
             )

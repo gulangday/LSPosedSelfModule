@@ -34,6 +34,7 @@ class SettingsScreen(private val host: ScreenHost) {
                 else -> -1
             },
             onPick = { which ->
+                android.util.Log.i("SelfXposedRoot", "pickWorkMode which=$which current=${WorkMode.get(ui.activity)}")
                 when (which) {
                     0 -> {
                         host.toast("正在请求 root 权限…")
@@ -86,6 +87,10 @@ class SettingsScreen(private val host: ScreenHost) {
 
                     else -> {
                         WorkMode.set(ui.activity, WorkMode.NO_ROOT)
+                        android.util.Log.i(
+                            "SelfXposedRoot",
+                            "切换非 Root 后读取=${WorkMode.get(ui.activity)}"
+                        )
                         host.toast("已切换为非 Root 模式")
                         host.refresh()
                     }

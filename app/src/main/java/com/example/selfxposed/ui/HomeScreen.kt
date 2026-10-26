@@ -4,6 +4,9 @@ import android.graphics.drawable.Drawable
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
+import com.example.selfxposed.Features
+import com.example.selfxposed.TargetFiles
+import com.example.selfxposed.WorkMode
 import java.util.Locale
 
 /** 主页：模块控制台 + 目标应用卡片列表。 */
@@ -15,7 +18,7 @@ class HomeScreen(private val host: ScreenHost) {
         val pkg: String,
         val label: String,
         val installed: Boolean,
-        val enabled: Boolean,
+        var enabled: Boolean,
         val detected: Boolean,
         val version: String?
     )
@@ -29,13 +32,14 @@ class HomeScreen(private val host: ScreenHost) {
         into.addView(ui.sectionTitle("目标应用"))
         into.addView(ui.hint("开关状态与 LSPosed 作用域是两个独立状态：作用域没有勾选时模块不会被注入，开关也不会生效。"))
 
+        val canRootHome = WorkMode.canUseRoot(ui.activity)
         val entries = repo.targets().map { pkg ->
-            val cfg = repo.config(pkg)
             Entry(
                 pkg = pkg,
                 label = repo.label(pkg),
                 installed = repo.isInstalled(pkg),
-                enabled = cfg.optBoolean("enabled", false),
+                // 首帧只用缓存，避免冷启动等 Shizuku 绑定；后台会补读并刷新
+                enabled = canRootHome && TargetFiles.peek(pkg)?.isOn(Features.BLOCK) == true,
                 detected = repo.hookDetected(pkg),
                 version = repo.versionName(pkg)
             )
@@ -59,6 +63,17 @@ class HomeScreen(private val host: ScreenHost) {
         // 后台补读 root 侧的 Hook 状态（不卡启动），有变化再刷新页面
         repo.refreshHookStatuses(entries.map { it.pkg }) {
             ui.activity.runOnUiThread { host.refresh() }
+        }
+
+        // 后台补读功能开关状态：首帧先用缓存，读完再刷新一次
+        if (canRootHome) {
+            val missing = entries.map { it.pkg }.filter { TargetFiles.peek(it) == null }
+            if (missing.isNotEmpty()) {
+                Thread {
+                    missing.forEach { pkg -> TargetFiles.load(pkg, force = true) }
+                    ui.activity.runOnUiThread { host.refresh() }
+                }.start()
+            }
         }
     }
 
@@ -142,33 +157,60 @@ class HomeScreen(private val host: ScreenHost) {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        right.addView(
-            ui.checkbox(entry.enabled, entry.installed, "${entry.label} 模块开关") { checked ->
-                toggle(entry, checked)
+        val canRoot = WorkMode.canUseRoot(ui.activity)
+        val on = entry.enabled
+        val statusChip = ui.chip(
+            if (on) "已开启" else "未开启",
+            if (on) Palette.success else Palette.muted,
+            if (on) Palette.successSoft else Palette.surfaceMuted
+        ).apply {
+            isClickable = true
+        }
+        statusChip.setOnClickListener {
+            val target = !entry.enabled
+            val ok = toggle(entry, target)
+            if (ok) {
+                // 只更新这个标签，不重建整页
+                entry.enabled = target
+                statusChip.text = if (target) "已开启" else "未开启"
+                statusChip.setTextColor(if (target) Palette.success else Palette.muted)
+                statusChip.background = ui.rounded(
+                    if (target) Palette.successSoft else Palette.surfaceMuted, 10
+                )
             }
-        )
-        row.addView(right, LinearLayout.LayoutParams(ui.dp(56), -1))
+        }
+        right.addView(statusChip)
+        row.addView(right, LinearLayout.LayoutParams(ui.dp(76), -1))
 
         card.addView(row)
         return card
     }
 
-    private fun toggle(entry: Entry, checked: Boolean) {
-        val cfg = repo.config(entry.pkg)
-        cfg.put("enabled", checked)
-        repo.saveConfig(entry.pkg, cfg)
-        repo.log(entry.pkg, if (checked) "已在模块设置中启用" else "已在模块设置中关闭")
+    private fun toggle(entry: Entry, checked: Boolean): Boolean {
+        if (!WorkMode.canUseRoot(ui.activity)) {
+            host.toast("需要 root / Shizuku 能力")
+            return false
+        }
+        val ok = Features.setRemote(entry.pkg, Features.BLOCK, checked)
+        TargetFiles.invalidate(entry.pkg)
+        repo.log(entry.pkg, if (checked) "已开启拦截弹窗" else "已关闭拦截弹窗")
+        host.toast(
+            if (ok) ("已" + (if (checked) "开启" else "关闭") + "「拦截弹窗」，重启目标应用生效")
+            else "写入失败，检查 root / Shizuku 授权"
+        )
+        return ok
     }
 
     private fun confirmRemove(entry: Entry) {
         ui.dialog(
             title = "移除目标应用",
-            message = "将从列表移除「${entry.label}」，并关闭它的模块开关。已有日志会保留。",
+            message = "将从列表移除「${entry.label}」，并关闭它的功能开关。已有日志会保留。",
             confirmText = "移除",
-            cancelText = "取消"
-        ) {
-            repo.removeTarget(entry.pkg)
-            host.refresh()
-        }
+            cancelText = "取消",
+            onConfirm = {
+                repo.removeTarget(entry.pkg)
+                host.refresh()
+            }
+        )
     }
 }

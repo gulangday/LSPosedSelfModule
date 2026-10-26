@@ -285,6 +285,57 @@ class MainHook : IXposedHookLoadPackage {
 
         // 通用弹窗守卫：不依赖配置，第一次弹窗询问、之后按规则执行。
         installDialogGuard(pkg, lpparam.classLoader)
+        // Toast 守卫：命中关键字时拦掉目标应用自己弹的 Toast
+        installToastGuard(pkg)
+    }
+
+    /** 拦截目标应用自己弹的 Toast（系统/其他应用的 Toast 拦不到）。 */
+    private fun installToastGuard(pkg: String) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                android.widget.Toast::class.java,
+                "show",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (showingConfirm) return
+                        val toast = param.thisObject as? android.widget.Toast ?: return
+                        try {
+                            val view = toast.view ?: return
+                            val context = view.context ?: return
+                            if (!Features.isOn(context, Features.TOAST)) return
+                            val text = toastText(toast, view) ?: return
+                            if (text.isBlank()) return
+                            val keywords = com.example.selfxposed.Keywords.load(context)
+                            val hit = keywords.any { it.isNotBlank() && text.contains(it, ignoreCase = true) }
+                            if (hit) {
+                                param.result = null
+                                logFramework("自用模块: 已拦截 Toast「${text.take(30)}」")
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            )
+            logFramework("自用模块: $pkg Toast 守卫已安装")
+        } catch (t: Throwable) {
+            logFramework("自用模块: $pkg Toast 守卫安装失败：${describe(t)}")
+        }
+    }
+
+    /** 取 Toast 的文字：优先反射 mText，其次遍历 view。 */
+    private fun toastText(toast: android.widget.Toast, view: android.view.View): String? {
+        try {
+            val field = toast.javaClass.getDeclaredField("mText")
+            field.isAccessible = true
+            (field.get(toast) as? CharSequence)?.toString()?.let { if (it.isNotBlank()) return it }
+        } catch (_: Throwable) {
+        }
+        val texts = ArrayList<String>()
+        try {
+            collectTexts(view, texts, 0)
+        } catch (_: Throwable) {
+        }
+        return texts.firstOrNull { it.isNotBlank() }
     }
 
     private fun onActivityResumed(activity: Activity, pkg: String) {
@@ -300,9 +351,9 @@ class MainHook : IXposedHookLoadPackage {
             logFramework("自用模块: 写运行标记失败：${describe(t)}")
         }
 
-        // 悬浮球：用于点选要拦截的弹窗
+        // 悬浮球：只有开启「拦截弹窗」功能才显示
         try {
-            installPickBall(activity, pkg)
+            if (Features.isOn(activity, Features.BLOCK)) installPickBall(activity, pkg)
         } catch (t: Throwable) {
             logFramework("自用模块: 悬浮球添加失败：${describe(t)}")
         }
@@ -324,14 +375,12 @@ class MainHook : IXposedHookLoadPackage {
         // 去更新：每个进程只安装一次（版本伪装 / 更新弹窗拦截）。
         if (updateHooked.add(pkg)) installUpdateBlockHooks(activity, pkg, cfg)
 
-        if (!cfg.optBoolean("enabled", false)) {
-            logOnce(disabledLogged, pkg) { writeLog(activity, pkg, "Hook 已触发，但模块开关处于关闭状态") }
-            logFramework("自用模块: $pkg 开关未启用")
-            return
-        }
-        if (!cfg.optBoolean("popupEnabled", true)) {
-            logOnce(popupOffLogged, pkg) { writeLog(activity, pkg, "模块已开启，但提示通知处于关闭状态") }
-            logFramework("自用模块: $pkg 提示通知未启用")
+        // 功能开关：默认关闭。优先看目标应用本地的 features 文件；
+        // 非 Root 模式下写不进去，所以再回退到模块配置（只对 targetSdk < 30 的应用读得到）。
+        val popupOn = Features.isOn(activity, Features.POPUP) || cfg.optBoolean("popupEnabled", false)
+        if (!popupOn) {
+            logOnce(disabledLogged, pkg) { writeLog(activity, pkg, "Hook 已触发，但「弹窗提醒」功能未启用") }
+            logFramework("自用模块: $pkg 弹窗提醒未启用")
             return
         }
 
@@ -446,9 +495,21 @@ class MainHook : IXposedHookLoadPackage {
                 "show",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        // 不再在 show 之前拦截：否则界面没布局，截不到图。
-                        // 统一在 after 里延迟判断、截图、再关闭。
                         if (showingConfirm) return
+                        val dialog = param.thisObject as? android.app.Dialog ?: return
+                        try {
+                            val context = dialog.context ?: return
+                            if (!Features.isOn(context, Features.BLOCK)) return
+                            // 自动拦截：先把窗口设透明，布局照常进行，用户看不到它弹出来
+                            if (loadBlockRules(context).mode == "block") {
+                                dialog.window?.let { window ->
+                                    val attributes = window.attributes
+                                    attributes.alpha = 0f
+                                    window.attributes = attributes
+                                }
+                            }
+                        } catch (_: Throwable) {
+                        }
                     }
 
                     override fun afterHookedMethod(param: MethodHookParam) {
@@ -456,6 +517,7 @@ class MainHook : IXposedHookLoadPackage {
                         if (showingConfirm) return
                         try {
                             val context = dialog.context ?: return
+                            if (!Features.isOn(context, Features.BLOCK)) return
                             val mode = loadBlockRules(context).mode
                             if (mode == "allow") return
                             // show() 之后布局才完成，延迟一点再读标题、截图、再决定是否拦截。
