@@ -32,9 +32,6 @@ class UpdateBlockScreen(
         into.addView(ui.card(Palette.hero).apply {
             elevation = 0f
             addView(ui.label("怎么拦截弹窗", 12, Palette.accent, true))
-            addView(ui.label(if (blockOn) "已启用" else "默认关闭，先打开下面的开关", 19, Palette.ink, true).apply {
-                setPadding(0, ui.dp(6), 0, ui.dp(6))
-            })
             addView(ui.label(
                 "1. 打开「启用拦截」开关\n" +
                     "2. 进入目标应用，点屏幕右侧的「拦」悬浮球\n" +
@@ -42,7 +39,7 @@ class UpdateBlockScreen(
                     "之后命中规则的弹窗会自动关闭并保存截图；" +
                     "长按被拦截后的提示条可以修改规则。",
                 12, Palette.muted, false
-            ))
+            ).apply { setPadding(0, ui.dp(8), 0, 0) })
         })
 
         into.addView(ui.sectionTitle("拦截弹窗 · $name"))
