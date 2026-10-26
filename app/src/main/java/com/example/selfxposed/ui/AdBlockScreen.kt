@@ -44,18 +44,8 @@ class AdBlockScreen(
             return
         }
 
-        // 未注入提示
-        if (repo.hookDetected(pkg) == false) {
-            into.addView(ui.card().apply {
-                addView(ui.label("模块还没注入到这个应用", 14, Palette.warning, true))
-                addView(ui.label(
-                    "去广告暂时不会生效：请确认 LSPosed 作用域已勾选该应用，然后重启它。",
-                    11, Palette.muted, false
-                ).apply { setPadding(0, ui.dp(4), 0, 0) })
-            })
-        }
-
-        val adChip = ui.statusChip(state.isOn(Features.AD)) { checked ->            val ok = Features.setRemote(pkg, Features.AD, checked)
+        val adChip = ui.statusChip(state.isOn(Features.AD)) { checked ->
+            val ok = Features.setRemote(pkg, Features.AD, checked)
             TargetFiles.invalidate(pkg)
             host.toast(if (ok) "已保存，重启目标应用生效" else "写入失败，检查 Root / Shizuku 授权")
             ok

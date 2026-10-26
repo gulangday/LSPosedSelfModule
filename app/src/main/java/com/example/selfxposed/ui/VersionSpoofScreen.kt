@@ -47,16 +47,6 @@ class VersionSpoofScreen(
             return
         }
 
-        // 未注入提示
-        if (repo.hookDetected(pkg) == false) {
-            into.addView(ui.card().apply {
-                addView(ui.label("模块还没注入到这个应用", 14, Palette.warning, true))
-                addView(ui.label(
-                    "版本伪装暂时不会生效：请确认 LSPosed 作用域已勾选该应用，然后重启它。",
-                    11, Palette.muted, false
-                ).apply { setPadding(0, ui.dp(4), 0, 0) })
-            })
-        }
 
         val realVersion = repo.versionName(pkg) ?: "未知"
         val updateChip = ui.statusChip(state.isOn(Features.UPDATE)) { checked ->
