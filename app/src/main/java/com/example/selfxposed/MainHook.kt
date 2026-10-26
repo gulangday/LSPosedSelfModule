@@ -300,16 +300,22 @@ class MainHook : IXposedHookLoadPackage {
                         if (showingConfirm) return
                         val toast = param.thisObject as? android.widget.Toast ?: return
                         try {
-                            val view = toast.view ?: return
-                            val context = view.context ?: return
+                            // Android 12+ 的 Toast.getView() 返回 null（系统统一渲染），
+                            // 所以不能用 view.context 拿 context，走当前应用的 Application。
+                            val context = currentApp() ?: return
                             if (!Features.isOn(context, Features.TOAST)) return
-                            val text = toastText(toast, view) ?: return
+                            val text = toastText(toast) ?: return
                             if (text.isBlank()) return
                             val keywords = com.example.selfxposed.Keywords.load(context)
                             val hit = keywords.any { it.isNotBlank() && text.contains(it, ignoreCase = true) }
                             if (hit) {
                                 param.result = null
                                 logFramework("自用模块: 已拦截 Toast「${text.take(30)}」")
+                            } else {
+                                // 方便核对：把实际文字和当前关键字都记下来
+                                logFramework(
+                                    "自用模块: Toast 未命中「${text.take(40)}」关键字=${keywords.joinToString("/")}"
+                                )
                             }
                         } catch (_: Throwable) {
                         }
@@ -322,20 +328,38 @@ class MainHook : IXposedHookLoadPackage {
         }
     }
 
-    /** 取 Toast 的文字：优先反射 mText，其次遍历 view。 */
-    private fun toastText(toast: android.widget.Toast, view: android.view.View): String? {
+    /** 取当前进程的 Application（Toast 本身拿不到 context）。 */
+    private fun currentApp(): android.app.Application? = try {
+        val cls = Class.forName("android.app.ActivityThread")
+        val current = XposedHelpers.callStaticMethod(cls, "currentApplication")
+        current as? android.app.Application
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** 取 Toast 的文字：反射 mText（不依赖 view）。 */
+    private fun toastText(toast: android.widget.Toast): String? {
         try {
-            val field = toast.javaClass.getDeclaredField("mText")
+            var cls: Class<*>? = toast.javaClass
+            while (cls != null && cls != android.widget.Toast::class.java) {
+                cls = cls.superclass
+            }
+            val target = cls ?: toast.javaClass
+            val field = target.getDeclaredField("mText")
             field.isAccessible = true
-            (field.get(toast) as? CharSequence)?.toString()?.let { if (it.isNotBlank()) return it }
+            val value = field.get(toast) as? CharSequence
+            if (!value.isNullOrBlank()) return value.toString()
         } catch (_: Throwable) {
         }
-        val texts = ArrayList<String>()
+        // 兜底：自定义 View 的 Toast
         try {
+            val view = toast.view ?: return null
+            val texts = ArrayList<String>()
             collectTexts(view, texts, 0)
+            return texts.firstOrNull { it.isNotBlank() }
         } catch (_: Throwable) {
+            return null
         }
-        return texts.firstOrNull { it.isNotBlank() }
     }
 
     private fun onActivityResumed(activity: Activity, pkg: String) {
