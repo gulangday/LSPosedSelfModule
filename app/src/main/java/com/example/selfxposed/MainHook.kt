@@ -287,6 +287,8 @@ class MainHook : IXposedHookLoadPackage {
         installDialogGuard(pkg, lpparam.classLoader)
         // Toast 守卫：命中关键字时拦掉目标应用自己弹的 Toast
         installToastGuard(pkg)
+        // 版本伪装：在包加载阶段就装好，避免应用在 Application.onCreate 里检查更新时漏掉
+        installVersionSpoofEarly(pkg, lpparam.classLoader)
     }
 
     /** 拦截目标应用自己弹的 Toast（系统/其他应用的 Toast 拦不到）。 */
@@ -399,11 +401,6 @@ class MainHook : IXposedHookLoadPackage {
         }
         val cfg = loaded.cfg
 
-        // 去更新：总开关开启后才安装（版本伪装 / 更新弹窗拦截）。
-        if (Features.isOn(activity, Features.MASTER) && updateHooked.add(pkg)) {
-            installUpdateBlockHooks(activity, pkg, cfg)
-        }
-
         // 功能开关：默认关闭。优先看目标应用本地的 features 文件；
         // 非 Root 模式下写不进去，所以再回退到模块配置（只对 targetSdk < 30 的应用读得到）。
         val popupOn = Features.isOn(activity, Features.MASTER) &&
@@ -465,50 +462,219 @@ class MainHook : IXposedHookLoadPackage {
     }
 
     /**
-     * 去更新：版本号伪装 + 更新弹窗拦截。
-     * 版本伪装只影响「查询本应用包」的返回值，不改系统里真实的包信息。
+     * 版本伪装：让目标应用查到的"自己"是更高的版本，从而不再弹强制更新。
+     *
+     * 配置必须存在目标应用本地（`files/selfxposed_update_block.conf`），
+     * 因为 targetSdk 30+ 的应用调不到模块 Provider。
+     * 只影响「查询本应用包」的返回值，不改系统里真实的包信息。
      */
     private fun installUpdateBlockHooks(activity: Activity, pkg: String, cfg: JSONObject) {
-        val block = cfg.optJSONObject("updateBlock") ?: return
-        if (!block.optBoolean("enabled", false)) return
+        if (!Features.isOn(activity, Features.UPDATE)) return
+        val conf = readUpdateBlockConf(activity)
+        val fakeName = conf.first.trim()
+        val fakeCode = conf.second
+        if (fakeName.isEmpty() && fakeCode <= 0) return
 
-        val fakeName = block.optString("fakeVersionName", "").trim()
-        val fakeCode = block.optInt("fakeVersionCode", 0)
         val loader = activity.javaClass.classLoader
+        val versionHook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                try {
+                    val queried = param.args.firstOrNull() as? String ?: return
+                    if (queried != pkg) return
+                    val info = param.result as? android.content.pm.PackageInfo ?: return
+                    if (fakeName.isNotEmpty()) info.versionName = fakeName
+                    if (fakeCode > 0) {
+                        @Suppress("DEPRECATION")
+                        info.versionCode = fakeCode
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+        }
 
-        if (fakeName.isNotEmpty() || fakeCode > 0) {
-            val versionHook = object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                        val queried = param.args.firstOrNull() as? String ?: return
-                        if (queried != pkg) return
-                        val info = param.result as? android.content.pm.PackageInfo ?: return
+        // getPackageInfo(String, int) —— 所有版本都有
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.ApplicationPackageManager",
+                loader,
+                "getPackageInfo",
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                versionHook
+            )
+            logFramework("自用模块: $pkg 版本伪装已安装 $fakeName($fakeCode)")
+        } catch (t: Throwable) {
+            logFramework("自用模块: $pkg 版本伪装安装失败：${describe(t)}")
+        }
+
+        // getPackageInfo(String, PackageInfoFlags) —— Android 13+ 的另一个重载
+        try {
+            val flagsClass = Class.forName("android.content.pm.PackageManager\$PackageInfoFlags")
+            XposedHelpers.findAndHookMethod(
+                "android.app.ApplicationPackageManager",
+                loader,
+                "getPackageInfo",
+                String::class.java,
+                flagsClass,
+                versionHook
+            )
+            logFramework("自用模块: $pkg 版本伪装（PackageInfoFlags）已安装")
+        } catch (_: Throwable) {
+            // 低版本没有这个重载，忽略
+        }
+    }
+
+    /**
+     * 版本伪装（包加载阶段就安装）：应用可能在 Application.onCreate 里就检查更新，
+     * 等到 Activity onResume 再装 hook 会漏掉这一次。
+     * 这里无条件装 hook，运行时再读配置和开关决定是否伪装。
+     */
+    private fun installVersionSpoofEarly(pkg: String, loader: ClassLoader?) {
+        val hook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                try {
+                    val queried = param.args.firstOrNull() as? String ?: return
+                    val info = param.result as? android.content.pm.PackageInfo ?: return
+                    val app = android.app.AndroidAppHelper.currentApplication()
+                    if (app == null) {
+                        logVersionSpoofOnce("$pkg-app-null", "版本伪装：currentApplication 为 null，跳过")
+                        return
+                    }
+                    // 只伪装「宿主进程自己的包」：同一进程里可能被注入多个包
+                    // （如 WebView / 系统组件），绝不能把它们也改掉。
+                    val hostPkg = app.packageName
+                    if (queried != hostPkg) return
+                    if (!Features.isOn(app, Features.UPDATE)) {
+                        logVersionSpoofOnce("$pkg-off", "版本伪装：功能开关未开启")
+                        return
+                    }
+                    val (fakeName, fakeCode) = cachedUpdateConf(app)
+                    if (fakeName.isEmpty() && fakeCode <= 0) {
+                        logVersionSpoofOnce("$pkg-empty", "版本伪装：配置为空")
+                        return
+                    }
+                    if (fakeName.isNotEmpty()) info.versionName = fakeName
+                    if (fakeCode > 0) {
+                        @Suppress("DEPRECATION")
+                        info.versionCode = fakeCode
+                    }
+                    logVersionSpoofOnce(
+                        "$pkg-hit-$fakeName-$fakeCode",
+                        "版本伪装命中：$queried → $fakeName($fakeCode)"
+                    )
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.ApplicationPackageManager",
+                loader,
+                "getPackageInfo",
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                hook
+            )
+        } catch (_: Throwable) {
+        }
+        try {
+            val flagsClass = Class.forName("android.content.pm.PackageManager\$PackageInfoFlags")
+            XposedHelpers.findAndHookMethod(
+                "android.app.ApplicationPackageManager",
+                loader,
+                "getPackageInfo",
+                String::class.java,
+                flagsClass,
+                hook
+            )
+        } catch (_: Throwable) {
+        }
+        // getPackageInfoAsUser（隐藏 API，部分 ROM / 应用会走它）
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.ApplicationPackageManager",
+                loader,
+                "getPackageInfoAsUser",
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                hook
+            )
+        } catch (_: Throwable) {
+        }
+        // getInstalledPackages：遍历列表里找到自己时也伪装
+        val installedHook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                try {
+                    val list = param.result as? List<*> ?: return
+                    val app = android.app.AndroidAppHelper.currentApplication() ?: return
+                    if (!Features.isOn(app, Features.UPDATE)) return
+                    val hostPkg = app.packageName
+                    val (fakeName, fakeCode) = cachedUpdateConf(app)
+                    if (fakeName.isEmpty() && fakeCode <= 0) return
+                    @Suppress("UNCHECKED_CAST")
+                    val infos = list as? MutableList<Any?>
+                    infos?.forEachIndexed { index, item ->
+                        val info = item as? android.content.pm.PackageInfo ?: return@forEachIndexed
+                        if (info.packageName != hostPkg) return@forEachIndexed
                         if (fakeName.isNotEmpty()) info.versionName = fakeName
                         if (fakeCode > 0) {
                             @Suppress("DEPRECATION")
                             info.versionCode = fakeCode
                         }
-                    } catch (_: Throwable) {
+                        infos[index] = info
                     }
+                } catch (_: Throwable) {
                 }
             }
-            try {
-                XposedHelpers.findAndHookMethod(
-                    "android.app.ApplicationPackageManager",
-                    loader,
-                    "getPackageInfo",
-                    String::class.java,
-                    Int::class.javaPrimitiveType,
-                    versionHook
-                )
-                logFramework("自用模块: $pkg 版本伪装已安装 $fakeName($fakeCode)")
-            } catch (t: Throwable) {
-                logFramework("自用模块: $pkg 版本伪装安装失败：${describe(t)}")
-            }
         }
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.ApplicationPackageManager",
+                loader,
+                "getInstalledPackages",
+                Int::class.javaPrimitiveType,
+                installedHook
+            )
+        } catch (_: Throwable) {
+        }
+        logFramework("自用模块: $pkg 版本伪装 hook 已在包加载阶段安装")
+    }
 
-        if (block.optBoolean("blockDialog", true)) {
-            logFramework("自用模块: $pkg 弹窗拦截交给通用规则处理")
+    /** 版本伪装调试日志：同一个 key 每进程只打一次，避免刷屏。 */
+    private fun logVersionSpoofOnce(key: String, message: String) {
+        if (versionLogOnce.add(key)) logFramework("自用模块: $message")
+    }
+
+    /** 3 秒内复用同一次文件读取，避免每次查版本都读盘。 */
+    private fun cachedUpdateConf(context: android.content.Context): Pair<String, Int> {
+        val now = System.currentTimeMillis()
+        val cached = updateConfCache
+        if (cached != null && now - updateConfAt < 3_000L) return cached
+        val fresh = readUpdateBlockConf(context)
+        updateConfCache = fresh
+        updateConfAt = now
+        return fresh
+    }
+
+    /** 读目标应用本地的版本伪装配置：返回 (fakeName, fakeCode)。 */
+    private fun readUpdateBlockConf(context: android.content.Context): Pair<String, Int> {
+        return try {
+            val file = java.io.File(context.filesDir, "selfxposed_update_block.conf")
+            if (!file.exists()) return "" to 0
+            var name = ""
+            var code = 0
+            file.readLines().forEach { line ->
+                val index = line.indexOf('=')
+                if (index <= 0) return@forEach
+                when (line.substring(0, index).trim()) {
+                    "fakeName" -> name = line.substring(index + 1).trim()
+                    "fakeCode" -> code = line.substring(index + 1).trim().toIntOrNull() ?: 0
+                }
+            }
+            name to code
+        } catch (_: Throwable) {
+            "" to 0
         }
     }
 
@@ -1255,6 +1421,15 @@ class MainHook : IXposedHookLoadPackage {
         private val pendingShows = ConcurrentHashMap<String, Runnable>()
         private val updateHooked = ConcurrentHashMap.newKeySet<String>()
         private val askedThisProcess = ConcurrentHashMap.newKeySet<String>()
+
+        /** 版本伪装配置缓存（3 秒），避免每次查版本都读文件。 */
+        @Volatile
+        private var updateConfCache: Pair<String, Int>? = null
+
+        @Volatile
+        private var updateConfAt = 0L
+
+        private val versionLogOnce = ConcurrentHashMap.newKeySet<String>()
 
         /** 弹窗规则的存储位置（写在目标应用自己身上，避免跨进程限制）。 */
         private const val RULES_PREFS = "selfxposed_block"

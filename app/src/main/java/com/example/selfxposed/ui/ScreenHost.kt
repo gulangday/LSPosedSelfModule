@@ -20,6 +20,7 @@ interface ScreenHost {
     fun backFromRules()
     fun openHintStyle(pkg: String?, name: String?)
     fun openKeywords(pkg: String, name: String)
+    fun openVersionSpoof(pkg: String, name: String)
     fun openLogs(pkg: String, name: String)
     fun backFromLogs()
     fun openHelp()

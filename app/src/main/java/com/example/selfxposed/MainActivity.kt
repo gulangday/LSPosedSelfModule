@@ -31,6 +31,7 @@ import com.example.selfxposed.ui.UpdateBlockScreen
 import com.example.selfxposed.ui.DialogRulesScreen
 import com.example.selfxposed.ui.HintStyleScreen
 import com.example.selfxposed.ui.KeywordScreen
+import com.example.selfxposed.ui.VersionSpoofScreen
 
 /**
  * 只负责外壳与导航：顶部标题、内容容器、底部两个导航项、系统返回键。
@@ -251,6 +252,7 @@ class MainActivity : Activity(), ScreenHost {
             "dialog_rules" -> PAGE_DIALOG_RULES
             "hint_style" -> PAGE_HINT_STYLE
             "keywords" -> PAGE_KEYWORDS
+            "version_spoof" -> PAGE_VERSION_SPOOF
             "permissions" -> PAGE_PERMISSIONS
             "about" -> PAGE_ABOUT
             "help" -> PAGE_HELP
@@ -431,7 +433,8 @@ class MainActivity : Activity(), ScreenHost {
 
     private fun updateNav(page: String, animate: Boolean) {
         val group = when (page) {
-            PAGE_FEATURES, PAGE_UPDATE_BLOCK, PAGE_DIALOG_RULES, PAGE_HINT_STYLE, PAGE_KEYWORDS -> 1
+            PAGE_FEATURES, PAGE_UPDATE_BLOCK, PAGE_DIALOG_RULES, PAGE_HINT_STYLE, PAGE_KEYWORDS,
+            PAGE_VERSION_SPOOF -> 1
             PAGE_SETTINGS, PAGE_PERMISSIONS, PAGE_ABOUT -> 2
             else -> 0
         }
@@ -483,6 +486,7 @@ class MainActivity : Activity(), ScreenHost {
             PAGE_DIALOG_RULES -> DialogRulesScreen(this, selectedPackage.ifBlank { null }).render(content)
             PAGE_HINT_STYLE -> HintStyleScreen(this, selectedPackage.ifBlank { null }).render(content)
             PAGE_KEYWORDS -> KeywordScreen(this, selectedPackage, selectedName).render(content)
+            PAGE_VERSION_SPOOF -> VersionSpoofScreen(this, selectedPackage, selectedName).render(content)
             PAGE_SETTINGS -> SettingsScreen(this).render(content)
             PAGE_PERMISSIONS -> PermissionsScreen(this).render(content)
             PAGE_ABOUT -> AboutScreen(this).render(content)
@@ -539,6 +543,12 @@ class MainActivity : Activity(), ScreenHost {
         renderPage(PAGE_KEYWORDS, animate = true)
     }
 
+    override fun openVersionSpoof(pkg: String, name: String) {
+        selectedPackage = pkg
+        selectedName = name
+        renderPage(PAGE_VERSION_SPOOF, animate = true)
+    }
+
     override fun openUpdateBlock(pkg: String, name: String) {
         selectedPackage = pkg
         selectedName = name
@@ -559,6 +569,7 @@ class MainActivity : Activity(), ScreenHost {
             selectedPackage.isEmpty() -> PAGE_SETTINGS
             logsBackPage == PAGE_APP -> PAGE_APP
             logsBackPage == PAGE_UPDATE_BLOCK -> PAGE_UPDATE_BLOCK
+            logsBackPage == PAGE_VERSION_SPOOF -> PAGE_VERSION_SPOOF
             else -> PAGE_SETTINGS
         }
         renderPage(target, animate = true)
@@ -671,6 +682,7 @@ class MainActivity : Activity(), ScreenHost {
             PAGE_HELP -> renderPage(if (previousPage == PAGE_SETTINGS) PAGE_SETTINGS else PAGE_HOME, animate = true)
             PAGE_PERMISSIONS, PAGE_ABOUT -> renderPage(PAGE_SETTINGS, animate = true)
             PAGE_UPDATE_BLOCK -> renderPage(PAGE_FEATURES, animate = true)
+            PAGE_VERSION_SPOOF -> renderPage(PAGE_FEATURES, animate = true)
             PAGE_DIALOG_RULES -> backFromRules()
             PAGE_HINT_STYLE, PAGE_KEYWORDS -> renderPage(
                 if (selectedPackage.isNotEmpty()) PAGE_UPDATE_BLOCK else PAGE_FEATURES,
@@ -696,6 +708,7 @@ class MainActivity : Activity(), ScreenHost {
         private const val PAGE_DIALOG_RULES = "dialog_rules"
         private const val PAGE_HINT_STYLE = "hint_style"
         private const val PAGE_KEYWORDS = "keywords"
+        private const val PAGE_VERSION_SPOOF = "version_spoof"
         private const val PAGE_SETTINGS = "settings"
         private const val PAGE_PERMISSIONS = "permissions"
         private const val PAGE_ABOUT = "about"

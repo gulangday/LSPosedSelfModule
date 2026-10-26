@@ -19,6 +19,8 @@ object Features {
     const val POPUP = "popup"
     const val BLOCK = "block"
     const val TOAST = "toast"
+    /** 版本伪装（拦截强制更新） */
+    const val UPDATE = "update"
 
     private fun fileOf(context: Context) = File(context.filesDir, FILE)
 

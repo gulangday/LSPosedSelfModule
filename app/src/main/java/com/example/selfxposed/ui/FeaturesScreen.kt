@@ -33,6 +33,14 @@ class FeaturesScreen(private val host: ScreenHost) {
             statusBackground = statusBackground(Features.BLOCK, targets, canRoot)
         ) { pickTarget(Features.BLOCK) { pkg, name -> host.openUpdateBlock(pkg, name) } })
 
+        into.addView(featureCard(
+            title = "版本伪装",
+            subtitle = "伪造更高的版本号，拦掉强制更新（不更新不让用）",
+            status = statusText(Features.UPDATE, targets, canRoot),
+            statusColor = statusColor(Features.UPDATE, targets, canRoot),
+            statusBackground = statusBackground(Features.UPDATE, targets, canRoot)
+        ) { pickTarget(Features.UPDATE) { pkg, name -> host.openVersionSpoof(pkg, name) } })
+
         // 启动早期 Shizuku 可能还没绑定好，读到空状态会显示"未启用"；
         // 后台补读一次，只有和当前显示不一致时才刷新（避免无限刷新）。
         if (canRoot && targets.isNotEmpty()) {
