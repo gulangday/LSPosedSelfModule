@@ -1,87 +1,57 @@
-# 项目约定（AGENTS.md）
+# 项目约定
 
-本文件是**项目级约束**，任何改动都必须遵守。与用户当次要求冲突时，以用户要求为准，但要在交付时说明冲突点。
+## 0 先清单后动手（违反视为任务失败）
 
-## 0. 最高优先级：先清单、后动手（违反视为任务失败）
+任务第一段必须给「分析 + 清单」；用户没说「开始 / 可以 / 做吧 / 动手」前，禁止写代码、构建、装机、commit/push。
+例外：只读检查（读代码、日志、adb）可先行。
 
-**任何任务，第一段回复必须是「分析 + 改动清单」；用户没有明确说「开始 / 可以 / 做吧 / 动手」之前，禁止：**
+## 0.1 安全红线
 
-- 写代码、改文件
-- 构建（gradlew）
-- 装机、截图验证
-- commit / push
+1. 删东西先列候选，确认后删，并校验绝对路径。
+2. 复制大文件先空跑：`robocopy "源" "目标" /E /L`。
+3. 删除 / 覆盖 / 格式化 / 改系统设置，四类先问一句。
 
-例外：**只读检查**（读代码、读日志、grep、查 adb 状态）可以先行，因为那是为了把清单写清楚。
+## 1 技术栈（不要替换）
 
-清单必须包含：改哪个文件/页面、改什么、影响范围、怎么验证。
-用户确认后才开始执行；完成后按清单逐项汇报结果。
+Kotlin 2.0.21 / AGP 8.7.3 / compileSdk 35 / targetSdk 28 / minSdk 26 / JDK 17（`JAVA_HOME=D:\JAVA\Java17`）。
+依赖：xposed api 82（compileOnly）、shizuku api+provider 13.1.5；UI 纯代码自绘（无 XML）。
+禁止：换依赖、换 UI 框架、改 XML 布局、动 `xposedminversion`。
 
-## 1. 技术栈（不要替换）
+## 2 目录与分层
 
-| 项 | 值 |
-|---|---|
-| 语言 | Kotlin 2.0.21 |
-| AGP | 8.7.3 |
-| compileSdk / targetSdk / minSdk | 35 / 28 / 26 |
-| JDK | 17（`JAVA_HOME=D:\JAVA\Java17`） |
-| 依赖 | `de.robv.android.xposed:api:82`（compileOnly）、`dev.rikka.shizuku:api:13.1.5`、`dev.rikka.shizuku:provider:13.1.5` |
-| UI | 纯代码自绘（无 XML 布局），`ui/UiKit.kt` 提供 card/label/actionCard/dialog/listDialog/lockedCard |
-| 构建 | `gradlew assembleDebug` |
+`MainHook`（注入）· `MainActivity`（壳+路由）· `ConfigClient`+`ModuleConfigProvider`（Provider）· `WorkMode` · `RootShell` · `ShizukuBridge`+`RemoteService`（必须继承 AIDL Stub）· 功能存储（Keywords / HintStyle / DialogRules）· `data/ModuleRepository` · `ui/*Screen` + `ui/ScreenHost`。
+禁止：UI 逻辑进 MainHook、hook 进 ui、跨层直调（UI 只经 ModuleRepository / ScreenHost）。
 
-**禁止**：擅自升级/更换依赖、引入新的 UI 框架、改用 XML 布局、改动 `xposedminversion` 等元数据。
+## 3 数据落点
 
-## 2. 目录约定
+模块配置/日志/目标列表 → Provider。
+hook 要读的数据 → 目标应用目录：规则 `shared_prefs/selfxposed_block.xml`、关键字 `files/selfxposed_keywords.conf`、拦截方式 `files/selfxposed_pick_mode.conf`、悬浮球 `files/selfxposed_ball_off`、运行标记 `files/selfxposed_seen`、截图 `files/blocked/*`。
+原因：targetSdk 30+ 看不到模块 Provider；新增数据沿用此模式并记入 HANDOFF。
 
-```
-app/src/main/java/com/example/selfxposed/
-  MainHook.kt            Xposed 入口（注入、弹窗守卫、悬浮球、截图、规则）
-  MainActivity.kt        壳 + 路由（PAGE_*）+ 工作模式选择
-  ConfigClient.kt        模块↔目标进程的 Provider 协议常量与调用
-  ModuleConfigProvider.kt Provider 实现（配置/日志/目标应用/提示样式）
-  WorkMode.kt            Root / Shizuku / 非Root（文件存储，不用 SharedPreferences）
-  RootShell.kt           统一命令通道（Shizuku → 直接 su → 直读文件）
-  ShizukuBridge.kt       Shizuku UserService 绑定与调用
-  RemoteService.kt       Shizuku 远程进程（必须继承 AIDL Stub，不能写成 Service）
-  Keywords.kt / HintStyle*.kt / DialogRules.kt   按功能拆分的本地存储
-  data/ModuleRepository.kt   UI 侧统一数据入口
-  ui/*Screen.kt          各页面，实现 ScreenHost 回调
-  ui/ScreenHost.kt       页面跳转与 toast 接口（新页面必须加方法）
-app/src/main/aidl/com/example/selfxposed/IRemoteService.aidl
-docs/                    说明与交接文档
-```
+## 4 质量要求
 
-**禁止**：把 UI 逻辑塞进 `MainHook`；把 hook 逻辑塞进 `ui/*`；跨层直接调用（UI 只能经 `ModuleRepository` / `ScreenHost`）。
+1. 改完 `gradlew assembleDebug` 通过，尽量装机验证。
+2. 禁止 PowerShell / sed 批量替换源码，逐处编辑。
+3. 静态 Handler / SharedPreferences 用 `by lazy` 或方法内创建。
+4. hook 与文件操作全包 try/catch，异常只记日志。
+5. 主线程不做 root / 文件 IO，状态走缓存 + 后台刷新。
+6. 新页面四处注册：`PAGE_*`、`renderPage`、`handleBack`、`ScreenHost`。
+7. root 功能用 `WorkMode.canUseRoot` 判断，无能力用 `ui.lockedCard` 置灰。
 
-## 3. 数据与通道约定
+## 5 交付
 
-- 模块自己的配置、日志、目标应用列表：`ModuleConfigProvider`（`${applicationId}.config`）。
-- **需要 hook 在目标进程读取的数据**，必须落在目标应用自己的目录：
-  - 规则：`shared_prefs/selfxposed_block.xml`
-  - 关键字：`files/selfxposed_keywords.conf`
-  - 拦截方式：`files/selfxposed_pick_mode.conf`（`ball` / `auto`）
-  - 悬浮球关闭标记：`files/selfxposed_ball_off`
-  - 运行标记：`files/selfxposed_seen`
-  - 拦截截图：`files/blocked/<时间戳>.png` + 同名 `.txt`（标题）
-- 原因：targetSdk 30+ 的应用受包可见性限制，调不到模块 Provider，只能靠本地文件 + root/Shizuku 读取。
-- 新增需要 hook 读取的数据时，必须沿用这个模式，并同步在 `docs/HANDOFF.md` 记录。
+先清单等确认；不主动 commit / push；完成后清单式汇报；不确定先问。
 
-## 4. 硬性质量要求
+## 6 交接
 
-1. 改完必须 `gradlew assembleDebug` 通过；有条件就装机验证。
-2. **禁止用 PowerShell / sed 批量替换源码**（编码会写坏文件，已踩过坑）；改动一律用编辑工具逐处修改。
-3. 静态 `Handler`、`SharedPreferences` 等要用 `by lazy` 或在方法内创建，不能在 `MainHook.<clinit>` 里初始化。
-4. 所有 hook 与文件操作必须包 `try/catch`，异常只记日志，不能影响目标应用。
-5. 涉及 UI 线程的阻塞操作（root 命令、文件读取）必须放后台线程；主页状态走缓存 + 后台刷新。
-6. 页面跳转：新页面必须在 `MainActivity` 注册 `PAGE_*`、在 `handleBack` 加返回目标、在 `ScreenHost` 加方法、在 `renderPage` 加分支，**四处齐全**。
-7. 需要 root 的功能，用 `WorkMode.canUseRoot(context)` 判断；非 Root 模式用 `ui.lockedCard(...)` 置灰。
+多步骤改造后按 `docs/HANDOFF.md` 模板追加一节。
 
-## 5. 交付流程（用户习惯）
+## 7 产品与交互规则
 
-1. 收到需求先**列清单**，等用户明确"开始"再动手。
-2. **不主动 git commit / push**，用户说推送再推。
-3. 改动完成后给**清单式汇报**：改了什么、验证结果、遗留问题。
-4. 不确定的技术点先问，不要猜。
-
-## 6. 交接文档
-
-每次**多步骤改造**结束，按 `docs/HANDOFF.md` 的模板追加一节，内容包括：改动清单、验证方式与结果、遗留问题、下一步建议。小改动（单文件、文案）可省略。
+1. 功能默认关闭、按应用开启，状态存目标应用 `features.conf`。
+2. 三层开关：主页 `master` → 功能 `block`/`popup`/`toast` → 功能内选项；上层未开，下层置灰。
+3. 显示 = 真实执行；功能页计数 = 主页启用 且 该功能开启 的应用数。
+4. 模块内提示统一 `host.toast()`（白底、2 秒 + 1 秒淡出、覆盖式、500ms 防抖），ui 层禁用系统 Toast。
+5. 删除 / 清空类操作必须二次确认。
+6. 文案统一：模块已启用/未启用、已开启/未开启、总开关未启用、需要 Root / Shizuku 模式。
+7. 返回回上一级，顶部按钮与系统返回键一致。
