@@ -63,7 +63,7 @@ class AppSettingsScreen(
                 ui.label("启用提示通知", 14, Palette.ink, true),
                 LinearLayout.LayoutParams(0, -2, 1f)
             )
-            row.addView(popupChip)
+            row.addView(popupChip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(2) })
             addView(row)
             if (!canRoot) {
                 addView(ui.label("非 Root 模式：只对 targetSdk < 30 的应用生效", 11, Palette.muted, false))

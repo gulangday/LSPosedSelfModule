@@ -220,6 +220,10 @@ class MainActivity : Activity(), ScreenHost {
         // 启动读取阶段不要提前渲染主页，否则会先闪出"未开启"再跳变
         if (booting) return
         if (::content.isInitialized) checkWorkModeHealth()
+        // 权限页：从系统设置授权回来时刷新一次，让通知权限状态及时更新
+        if (::content.isInitialized && currentPage == PAGE_PERMISSIONS) {
+            renderPage(PAGE_PERMISSIONS, animate = false)
+        }
         // 回到主页时刷新一次，让 Hook 连接状态反映最新的握手记录。
         if (::content.isInitialized && currentPage == PAGE_HOME) {
             renderPage(PAGE_HOME, animate = false)

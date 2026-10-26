@@ -1,7 +1,12 @@
 package com.example.selfxposed.ui
 
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import android.view.Gravity
 import android.widget.LinearLayout
-import android.widget.Switch
 import com.example.selfxposed.KeepAlive
 import com.example.selfxposed.KeepAliveService
 
@@ -13,24 +18,85 @@ class PermissionsScreen(private val host: ScreenHost) {
         into.addView(ui.backRow("‹  设置") { host.openSettings() })
         into.addView(ui.sectionTitle("权限"))
 
-        val keepAlive = Switch(ui.activity).apply {
-            text = "后台常驻"
-            textSize = 14f
-            isChecked = KeepAlive.isEnabled(ui.activity)
-            setPadding(0, ui.dp(4), 0, ui.dp(4))
-            setOnCheckedChangeListener { _, checked ->
-                KeepAlive.setEnabled(ui.activity, checked)
-                if (checked) KeepAliveService.start(ui.activity) else KeepAliveService.stop(ui.activity)
+        // ---- 后台常驻：状态跟随「通知权限」，有权限即常驻，没有则未开启 ----
+        val notifyAllowed = hasNotificationPermission()
+        // 自动对齐：有权限 → 打开常驻；权限被撤销 → 关闭常驻
+        if (notifyAllowed && !KeepAlive.isEnabled(ui.activity)) {
+            KeepAlive.setEnabled(ui.activity, true)
+            KeepAliveService.start(ui.activity)
+        } else if (!notifyAllowed && KeepAlive.isEnabled(ui.activity)) {
+            KeepAlive.setEnabled(ui.activity, false)
+            KeepAliveService.stop(ui.activity)
+        }
+        val keepChip = ui.chip(
+            if (notifyAllowed) "已开启" else "未开启",
+            if (notifyAllowed) Palette.success else Palette.muted,
+            if (notifyAllowed) Palette.successSoft else Palette.surfaceMuted
+        ).apply {
+            if (notifyAllowed) {
+                // 有通知权限时不允许手动关闭
+                isClickable = false
+            } else {
+                isClickable = true
+                setOnClickListener { openNotificationSettings() }
             }
         }
-        into.addView(ui.card().apply { addView(keepAlive) })
-        into.addView(ui.hint("常驻为可选项（默认关闭）：会常驻一条通知，提高被唤醒的成功率。"))
+        into.addView(ui.card().apply {
+            addView(rowWith("后台常驻", keepChip))
+            addView(ui.label(
+                if (notifyAllowed) {
+                    "已随通知权限自动开启：保持一条常驻通知，提高被唤醒的成功率"
+                } else {
+                    "未开启：点右侧标签授予通知权限后会自动常驻（常驻需要一条通知）"
+                },
+                11, Palette.muted, false
+            ).apply { setPadding(0, ui.dp(4), 0, 0) })
+        })
 
-        into.addView(ui.entryRow("自启动", "允许系统在需要时唤醒本模块") { openAutoStart() })
-        into.addView(ui.hint("必须开启。目标应用读取配置时会唤醒本模块，未授权则被系统拦截。"))
+        // ---- 自启动（建议开启，非必需）----
+        into.addView(ui.card().apply {
+            addView(ui.label("自启动", 15, Palette.ink, true))
+            addView(ui.label("建议开启（非必需）", 12, Palette.accent, true).apply {
+                setPadding(0, ui.dp(4), 0, 0)
+            })
+            addView(ui.label(
+                "· 拦截规则存在目标应用本地，不开启也能正常拦截\n" +
+                    "· 只有模块被系统杀掉后、目标应用要读模块配置（如弹窗文字）时，\n" +
+                    "  才需要系统能把模块重新拉起来\n" +
+                    "· 点这里去系统设置里允许自启动",
+                11, Palette.muted, false
+            ).apply { setPadding(0, ui.dp(6), 0, 0) })
+            ui.pressable(this, { openAutoStart() })
+        })
     }
 
-    /** MIUI 的自启动页没有公开 action，只能按常见组件名尝试，失败再退回应用详情页。 */
+    private fun hasNotificationPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ui.activity.checkSelfPermission(
+            "android.permission.POST_NOTIFICATIONS"
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun openNotificationSettings() {
+        try {
+            ui.activity.startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, ui.activity.packageName)
+            )
+        } catch (_: Throwable) {
+            host.toast("无法打开通知设置")
+        }
+    }
+
+    private fun rowWith(title: String, chip: android.view.View): LinearLayout =
+        LinearLayout(ui.activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(ui.label(title, 15, Palette.ink, true), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(chip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(2) })
+        }
+
+    /** MIUI / ColorOS 的自启动页没有公开 action，只能按常见组件名尝试，失败退回应用详情页。 */
     private fun openAutoStart() {
         val candidates = listOf(
             android.content.ComponentName(
@@ -40,6 +106,14 @@ class PermissionsScreen(private val host: ScreenHost) {
             android.content.ComponentName(
                 "com.miui.securitycenter",
                 "com.miui.permcenter.AutoStartManagementActivity"
+            ),
+            android.content.ComponentName(
+                "com.oplus.safecenter",
+                "com.oplus.safecenter.permission.startup.StartupAppListActivity"
+            ),
+            android.content.ComponentName(
+                "com.coloros.safecenter",
+                "com.coloros.safecenter.startupapp.StartupAppListActivity"
             )
         )
         for (component in candidates) {
@@ -52,7 +126,7 @@ class PermissionsScreen(private val host: ScreenHost) {
         try {
             ui.activity.startActivity(
                 android.content.Intent(
-                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                     android.net.Uri.parse("package:${ui.activity.packageName}")
                 )
             )

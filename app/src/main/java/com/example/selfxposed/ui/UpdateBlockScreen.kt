@@ -70,7 +70,7 @@ class UpdateBlockScreen(
                 ui.label("启用拦截", 14, Palette.ink, true),
                 LinearLayout.LayoutParams(0, -2, 1f)
             )
-            row.addView(enableChip)
+            row.addView(enableChip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(2) })
             addView(row)
             if (!canRoot) addView(ui.label("需要 Root / Shizuku 模式才能写入目标应用", 11, Palette.muted, false))
         })
@@ -115,7 +115,7 @@ class UpdateBlockScreen(
                 ui.label("拦截 Toast 提示", 14, Palette.ink, true),
                 LinearLayout.LayoutParams(0, -2, 1f)
             )
-            row.addView(toastChip)
+            row.addView(toastChip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(2) })
             addView(row)
             addView(ui.label("按「关键字」匹配；只能拦目标应用自己弹的 Toast", 11, Palette.muted, false).apply {
                 setPadding(0, ui.dp(4), 0, 0)
@@ -158,7 +158,7 @@ class UpdateBlockScreen(
                     ui.label("悬浮球", 15, Palette.ink, true),
                     LinearLayout.LayoutParams(0, -2, 1f)
                 )
-                row.addView(ballChip)
+                row.addView(ballChip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(2) })
                 addView(row)
                 addView(ui.label("长按悬浮球也可以关闭它", 11, Palette.muted, false).apply {
                     setPadding(0, ui.dp(4), 0, 0)
