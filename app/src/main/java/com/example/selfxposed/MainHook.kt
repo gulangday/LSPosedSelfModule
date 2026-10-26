@@ -289,6 +289,196 @@ class MainHook : IXposedHookLoadPackage {
         installToastGuard(pkg)
         // 版本伪装：在包加载阶段就装好，避免应用在 Application.onCreate 里检查更新时漏掉
         installVersionSpoofEarly(pkg, lpparam.classLoader)
+        // 去广告：拦广告 SDK 的 Activity 跳转（开屏/广告页）与摇一摇传感器
+        installAdBlockHooks(pkg, lpparam.classLoader)
+        // 运行标记：注入成功就写，比等 Activity 更早，模块据此判断"这次真的注入了"
+        installSeenWriter(pkg, lpparam.classLoader)
+    }
+
+    /** 应用进程一创建就写 seen，供模块判断"这次启动有没有被注入"。 */
+    private fun installSeenWriter(pkg: String, loader: ClassLoader?) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                android.app.Application::class.java,
+                "onCreate",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        try {
+                            val app = param.thisObject as? android.app.Application ?: return
+                            val file = java.io.File(app.filesDir, "selfxposed_seen")
+                            file.writeText(System.currentTimeMillis().toString())
+                            logFramework("自用模块: 已写入运行标记（$pkg, Application 创建）")
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * 去广告（一个开关控制全部）。
+     *
+     * 只做两件通用的事，不依赖广告 SDK 的具体类名：
+     * 1. 拦 Activity 跳转：目标 Activity 类名命中广告 SDK 前缀 → 不启动（开屏、广告落地页）
+     * 2. 拦传感器注册：监听器来自广告 SDK → 不注册（摇一摇）
+     * 弹窗式广告交给「拦截弹窗」的关键字/规则。
+     */
+    private fun installAdBlockHooks(pkg: String, loader: ClassLoader?) {
+        // 1) 传感器（摇一摇）
+        val sensorHook = object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                try {
+                    val app = android.app.AndroidAppHelper.currentApplication() ?: return
+                    if (!Features.isOn(app, Features.AD)) return
+                    val listener = param.args.getOrNull(0) ?: return
+                    if (!AdSdkBlacklist.matchesInstance(app, listener)) return
+                    param.result = null
+                    logAdOnce("$pkg-sensor", "去广告：已拦摇一摇传感器（${listener.javaClass.name}）")
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        listOf(
+            arrayOf(android.hardware.SensorEventListener::class.java, android.hardware.Sensor::class.java, Int::class.javaPrimitiveType),
+            arrayOf(android.hardware.SensorEventListener::class.java, android.hardware.Sensor::class.java, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType),
+            arrayOf(android.hardware.SensorEventListener::class.java, android.hardware.Sensor::class.java, Int::class.javaPrimitiveType, android.os.Handler::class.java)
+        ).forEach { signature ->
+            try {
+                XposedHelpers.findAndHookMethod(
+                    android.hardware.SensorManager::class.java,
+                    "registerListener",
+                    *signature,
+                    sensorHook
+                )
+            } catch (_: Throwable) {
+            }
+        }
+
+        // 2) Activity 跳转（开屏 / 广告落地页）
+        val startHook = object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                try {
+                    val app = android.app.AndroidAppHelper.currentApplication() ?: return
+                    if (!Features.isOn(app, Features.AD)) return
+                    val intent = param.args.firstOrNull { it is android.content.Intent } as? android.content.Intent
+                        ?: return
+                    val className = intent.component?.className
+                    if (!AdSdkBlacklist.matches(app, className)) return
+                    param.result = null
+                    logAdOnce("$pkg-start-$className", "去广告：已拦广告页跳转 $className")
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        // Context.startActivity(Intent) / (Intent, Bundle) / Instrumentation.execStartActivity
+        try {
+            XposedHelpers.findAndHookMethod(
+                android.content.ContextWrapper::class.java,
+                "startActivity",
+                android.content.Intent::class.java,
+                startHook
+            )
+        } catch (_: Throwable) {
+        }
+        try {
+            XposedHelpers.findAndHookMethod(
+                android.content.ContextWrapper::class.java,
+                "startActivity",
+                android.content.Intent::class.java,
+                android.os.Bundle::class.java,
+                startHook
+            )
+        } catch (_: Throwable) {
+        }
+        logFramework("自用模块: $pkg 去广告 hook 已安装")
+
+        // 3) 广告域名拦截：不依赖 SDK 类名，混淆也能拦
+        val urlHook = object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                try {
+                    val app = android.app.AndroidAppHelper.currentApplication() ?: return
+                    if (!Features.isOn(app, Features.AD)) return
+                    val url = when (val target = param.thisObject) {
+                        is java.net.HttpURLConnection -> target.url?.toString()
+                        is java.net.URL -> target.toString()
+                        else -> null
+                    } ?: return
+                    if (!AdUrlBlacklist.matches(app, url)) return
+                    // HttpURLConnection.getInputStream 返回空流；其余方法返回 null 即可跳过
+                    param.result = if (param.method.name == "getInputStream") {
+                        java.io.ByteArrayInputStream(ByteArray(0))
+                    } else {
+                        null
+                    }
+                    logAdOnce("$pkg-url-${param.method.name}", "去广告：已拦广告域名 $url")
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        try {
+            XposedHelpers.findAndHookMethod(
+                java.net.HttpURLConnection::class.java,
+                "getInputStream",
+                urlHook
+            )
+        } catch (_: Throwable) {
+        }
+        // WebView 加载广告页（开屏常是 WebView）
+        try {
+            XposedHelpers.findAndHookMethod(
+                android.webkit.WebView::class.java,
+                "loadUrl",
+                String::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        try {
+                            val app = android.app.AndroidAppHelper.currentApplication() ?: return
+                            if (!Features.isOn(app, Features.AD)) return
+                            val url = param.args.firstOrNull() as? String ?: return
+                            if (!AdUrlBlacklist.matches(app, url)) return
+                            param.result = null
+                            logAdOnce("$pkg-webview", "去广告：已拦 WebView 广告页 $url")
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            )
+        } catch (_: Throwable) {
+        }
+
+        // 4) DNS 解析：所有网络库最终都要解析域名，命中黑名单就让它解析失败
+        try {
+            XposedHelpers.findAndHookMethod(
+                java.net.InetAddress::class.java,
+                "getAllByName",
+                String::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        try {
+                            val app = android.app.AndroidAppHelper.currentApplication() ?: return
+                            if (!Features.isOn(app, Features.AD)) return
+                            val host = param.args.firstOrNull() as? String ?: return
+                            // 调试：记录所有域名，方便找广告域名
+                            if (Features.isOn(app, Features.AD_LOG)) {
+                                logAdOnce("$pkg-dnslog-$host", "DNS 请求：$host")
+                            }
+                            if (!AdUrlBlacklist.matches(app, "http://$host/")) return
+                            param.result = emptyArray<java.net.InetAddress>()
+                            logAdOnce("$pkg-dns-$host", "去广告：已拦广告域名解析 $host")
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 去广告日志：同一 key 每进程只打一次。 */
+    private fun logAdOnce(key: String, message: String) {
+        if (adLogOnce.add(key)) logFramework("自用模块: $message")
     }
 
     /** 拦截目标应用自己弹的 Toast（系统/其他应用的 Toast 拦不到）。 */
@@ -1430,6 +1620,8 @@ class MainHook : IXposedHookLoadPackage {
         private var updateConfAt = 0L
 
         private val versionLogOnce = ConcurrentHashMap.newKeySet<String>()
+
+        private val adLogOnce = ConcurrentHashMap.newKeySet<String>()
 
         /** 弹窗规则的存储位置（写在目标应用自己身上，避免跨进程限制）。 */
         private const val RULES_PREFS = "selfxposed_block"

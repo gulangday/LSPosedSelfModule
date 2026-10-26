@@ -41,6 +41,14 @@ class FeaturesScreen(private val host: ScreenHost) {
             statusBackground = statusBackground(Features.UPDATE, targets, canRoot)
         ) { pickTarget(Features.UPDATE) { pkg, name -> host.openVersionSpoof(pkg, name) } })
 
+        into.addView(featureCard(
+            title = "去广告",
+            subtitle = "开屏 / 摇一摇 / 广告落地页，一个开关全拦",
+            status = statusText(Features.AD, targets, canRoot),
+            statusColor = statusColor(Features.AD, targets, canRoot),
+            statusBackground = statusBackground(Features.AD, targets, canRoot)
+        ) { pickTarget(Features.AD) { pkg, name -> host.openAdBlock(pkg, name) } })
+
         // 启动早期 Shizuku 可能还没绑定好，读到空状态会显示"未启用"；
         // 后台补读一次，只有和当前显示不一致时才刷新（避免无限刷新）。
         if (canRoot && targets.isNotEmpty()) {

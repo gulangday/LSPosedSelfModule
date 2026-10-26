@@ -21,6 +21,10 @@ object Features {
     const val TOAST = "toast"
     /** 版本伪装（拦截强制更新） */
     const val UPDATE = "update"
+    /** 去广告（开屏 / 摇一摇 / 弹窗 / 局部） */
+    const val AD = "ad"
+    /** 去广告调试：把目标应用的 DNS 请求域名写进日志，方便找广告域名 */
+    const val AD_LOG = "adLog"
 
     private fun fileOf(context: Context) = File(context.filesDir, FILE)
 

@@ -103,9 +103,19 @@ class UpdateBlockScreen(
             if (!canRoot) addView(ui.label("需要 Root / Shizuku 模式才能写入目标应用", 11, Palette.muted, false))
         })
 
+        // 未注入提示：模块已启用但 hook 没跑过（作用域没勾 / 没重启 / 重装后作用域丢失）
+        if (repo.hookDetected(pkg) == false) {
+            into.addView(ui.card().apply {
+                addView(ui.label("模块还没注入到这个应用", 14, Palette.warning, true))
+                addView(ui.label(
+                    "功能暂时不会生效：请确认 LSPosed 作用域已勾选该应用，然后重启它。",
+                    11, Palette.muted, false
+                ).apply { setPadding(0, ui.dp(4), 0, 0) })
+            })
+        }
+
         // 「启用拦截」是总开关：没开启时其余功能一律置灰
-        if (!blockOn) {
-            val reason = if (!canRoot) "需要 Root / Shizuku 模式" else "开启上方「启用拦截」总开关后可用"
+        if (!blockOn) {            val reason = if (!canRoot) "需要 Root / Shizuku 模式" else "开启上方「启用拦截」总开关后可用"
             val tag = if (!canRoot) "需要 Root / Shizuku 模式" else "总开关未开"
             listOf(
                 "拦截 Toast 提示" to "按关键字拦掉目标应用自己弹的 Toast",

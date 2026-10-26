@@ -21,6 +21,7 @@ interface ScreenHost {
     fun openHintStyle(pkg: String?, name: String?)
     fun openKeywords(pkg: String, name: String)
     fun openVersionSpoof(pkg: String, name: String)
+    fun openAdBlock(pkg: String, name: String)
     fun openLogs(pkg: String, name: String)
     fun backFromLogs()
     fun openHelp()

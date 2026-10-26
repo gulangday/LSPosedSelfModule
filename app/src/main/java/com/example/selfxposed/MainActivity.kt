@@ -32,6 +32,7 @@ import com.example.selfxposed.ui.DialogRulesScreen
 import com.example.selfxposed.ui.HintStyleScreen
 import com.example.selfxposed.ui.KeywordScreen
 import com.example.selfxposed.ui.VersionSpoofScreen
+import com.example.selfxposed.ui.AdBlockScreen
 
 /**
  * 只负责外壳与导航：顶部标题、内容容器、底部两个导航项、系统返回键。
@@ -52,6 +53,9 @@ class MainActivity : Activity(), ScreenHost {
 
     /** 每个页面各自的滚动位置，返回上一级时恢复到离开时的位置。 */
     private val pageScrollY = HashMap<String, Int>()
+
+    /** 导航栈：记录来路，返回时直接弹栈（新页面不需要再注册返回目标）。 */
+    private val navStack = ArrayDeque<String>()
 
     /** 启动读取阶段：此时不要被 onResume 提前渲染主页。 */
     private var booting = true
@@ -252,7 +256,22 @@ class MainActivity : Activity(), ScreenHost {
             "dialog_rules" -> PAGE_DIALOG_RULES
             "hint_style" -> PAGE_HINT_STYLE
             "keywords" -> PAGE_KEYWORDS
-            "version_spoof" -> PAGE_VERSION_SPOOF
+            "version_spoof" -> {
+                val first = repo.targets().firstOrNull()
+                if (first != null) {
+                    selectedPackage = first
+                    selectedName = repo.label(first)
+                }
+                PAGE_VERSION_SPOOF
+            }
+            "ad_block" -> {
+                val first = repo.targets().firstOrNull()
+                if (first != null) {
+                    selectedPackage = first
+                    selectedName = repo.label(first)
+                }
+                PAGE_AD_BLOCK
+            }
             "permissions" -> PAGE_PERMISSIONS
             "about" -> PAGE_ABOUT
             "help" -> PAGE_HELP
@@ -434,7 +453,7 @@ class MainActivity : Activity(), ScreenHost {
     private fun updateNav(page: String, animate: Boolean) {
         val group = when (page) {
             PAGE_FEATURES, PAGE_UPDATE_BLOCK, PAGE_DIALOG_RULES, PAGE_HINT_STYLE, PAGE_KEYWORDS,
-            PAGE_VERSION_SPOOF -> 1
+            PAGE_VERSION_SPOOF, PAGE_AD_BLOCK -> 1
             PAGE_SETTINGS, PAGE_PERMISSIONS, PAGE_ABOUT -> 2
             else -> 0
         }
@@ -458,11 +477,16 @@ class MainActivity : Activity(), ScreenHost {
         }
     }
 
-    private fun renderPage(page: String, animate: Boolean) {
+    private fun renderPage(page: String, animate: Boolean, fromBack: Boolean = false) {
         val direction = if (page == PAGE_HOME && currentPage != PAGE_HOME) -1f else 1f
         // 记住离开当前页时的滚动位置，回到该页时恢复
         if (::content.isInitialized) {
             pageScrollY[currentPage] = scroll.scrollY
+        }
+        // 记住导航路径：返回时直接弹栈，新页面无需再逐个注册返回目标
+        if (!fromBack && page != currentPage) {
+            navStack.addLast(currentPage)
+            if (navStack.size > 30) navStack.removeFirst()
         }
         currentPage = page
         updateNav(page, animate)
@@ -487,6 +511,7 @@ class MainActivity : Activity(), ScreenHost {
             PAGE_HINT_STYLE -> HintStyleScreen(this, selectedPackage.ifBlank { null }).render(content)
             PAGE_KEYWORDS -> KeywordScreen(this, selectedPackage, selectedName).render(content)
             PAGE_VERSION_SPOOF -> VersionSpoofScreen(this, selectedPackage, selectedName).render(content)
+            PAGE_AD_BLOCK -> AdBlockScreen(this, selectedPackage, selectedName).render(content)
             PAGE_SETTINGS -> SettingsScreen(this).render(content)
             PAGE_PERMISSIONS -> PermissionsScreen(this).render(content)
             PAGE_ABOUT -> AboutScreen(this).render(content)
@@ -528,7 +553,7 @@ class MainActivity : Activity(), ScreenHost {
 
     /** 从弹窗规则页返回来源页。 */
     override fun backFromRules() {
-        renderPage(rulesBackPage, animate = true)
+        renderPage(rulesBackPage, animate = true, fromBack = true)
     }
 
     override fun openHintStyle(pkg: String?, name: String?) {
@@ -549,6 +574,12 @@ class MainActivity : Activity(), ScreenHost {
         renderPage(PAGE_VERSION_SPOOF, animate = true)
     }
 
+    override fun openAdBlock(pkg: String, name: String) {
+        selectedPackage = pkg
+        selectedName = name
+        renderPage(PAGE_AD_BLOCK, animate = true)
+    }
+
     override fun openUpdateBlock(pkg: String, name: String) {
         selectedPackage = pkg
         selectedName = name
@@ -565,14 +596,13 @@ class MainActivity : Activity(), ScreenHost {
 
     /** 从日志页返回来源页。 */
     override fun backFromLogs() {
+        // 通用：回到进入日志前的页面，不再逐个页面加映射（避免新页面漏注册）
         val target = when {
             selectedPackage.isEmpty() -> PAGE_SETTINGS
-            logsBackPage == PAGE_APP -> PAGE_APP
-            logsBackPage == PAGE_UPDATE_BLOCK -> PAGE_UPDATE_BLOCK
-            logsBackPage == PAGE_VERSION_SPOOF -> PAGE_VERSION_SPOOF
-            else -> PAGE_SETTINGS
+            logsBackPage.isBlank() || logsBackPage == PAGE_LOGS -> PAGE_SETTINGS
+            else -> logsBackPage
         }
-        renderPage(target, animate = true)
+        renderPage(target, animate = true, fromBack = true)
     }
 
     override fun openHelp() {
@@ -674,23 +704,24 @@ class MainActivity : Activity(), ScreenHost {
     }
 
     private fun handleBack() {
-        when (currentPage) {
-            // 应用设置页是从「功能」进来的，返回回功能页
-            PAGE_APP -> renderPage(PAGE_FEATURES, animate = true)
-            PAGE_PICKER -> renderPage(PAGE_HOME, animate = true)
-            PAGE_LOGS -> backFromLogs()
-            PAGE_HELP -> renderPage(if (previousPage == PAGE_SETTINGS) PAGE_SETTINGS else PAGE_HOME, animate = true)
-            PAGE_PERMISSIONS, PAGE_ABOUT -> renderPage(PAGE_SETTINGS, animate = true)
-            PAGE_UPDATE_BLOCK -> renderPage(PAGE_FEATURES, animate = true)
-            PAGE_VERSION_SPOOF -> renderPage(PAGE_FEATURES, animate = true)
-            PAGE_DIALOG_RULES -> backFromRules()
-            PAGE_HINT_STYLE, PAGE_KEYWORDS -> renderPage(
-                if (selectedPackage.isNotEmpty()) PAGE_UPDATE_BLOCK else PAGE_FEATURES,
-                animate = true
-            )
-            PAGE_FEATURES -> renderPage(PAGE_HOME, animate = true)
-            PAGE_SETTINGS -> renderPage(PAGE_HOME, animate = true)
-            else -> finish()
+        // 通用返回：直接弹导航栈，新页面无需再注册返回目标
+        val previous = navStack.removeLastOrNull()
+        if (previous != null && previous != currentPage) {
+            renderPage(previous, animate = true, fromBack = true)
+            return
+        }
+        if (currentPage == PAGE_LOGS) {
+            backFromLogs()
+            return
+        }
+        if (currentPage == PAGE_DIALOG_RULES) {
+            backFromRules()
+            return
+        }
+        if (currentPage != PAGE_HOME) {
+            renderPage(PAGE_HOME, animate = true, fromBack = true)
+        } else {
+            finish()
         }
     }
 
@@ -709,6 +740,7 @@ class MainActivity : Activity(), ScreenHost {
         private const val PAGE_HINT_STYLE = "hint_style"
         private const val PAGE_KEYWORDS = "keywords"
         private const val PAGE_VERSION_SPOOF = "version_spoof"
+        private const val PAGE_AD_BLOCK = "ad_block"
         private const val PAGE_SETTINGS = "settings"
         private const val PAGE_PERMISSIONS = "permissions"
         private const val PAGE_ABOUT = "about"

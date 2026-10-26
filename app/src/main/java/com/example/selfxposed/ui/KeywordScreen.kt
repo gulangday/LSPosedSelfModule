@@ -34,28 +34,40 @@ class KeywordScreen(
         }
 
         val input = EditText(ui.activity).apply {
-            hint = "输入关键字，如 发现新版本"
-            textSize = 15f
-            isSingleLine = true
-            inputType = InputType.TYPE_CLASS_TEXT
+            hint = "每行一个关键字，例如：\n发现新版本"
+            textSize = 14f
+            isSingleLine = false
+            gravity = android.view.Gravity.TOP
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setPadding(ui.dp(4), ui.dp(8), ui.dp(4), ui.dp(8))
             background = null
+            isVerticalScrollBarEnabled = true
+            scrollBarStyle = android.view.View.SCROLLBARS_INSIDE_INSET
         }
         into.addView(ui.card().apply {
             addView(ui.label("添加关键字", 13, Palette.muted, true))
-            addView(input, LinearLayout.LayoutParams(-1, -2))
+            addView(input, LinearLayout.LayoutParams(-1, ui.dp(110)))
         })
         into.addView(ui.actionCard("添加", "加入当前应用的关键字列表") {
-            val value = input.text.toString().trim()
-            if (value.isEmpty()) {
+            val values = input.text.toString()
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            if (values.isEmpty()) {
                 host.toast("请输入关键字")
                 return@actionCard
             }
-            if (keywords.contains(value)) {
-                host.toast("已存在")
+            var added = 0
+            values.forEach { value ->
+                if (!keywords.contains(value)) {
+                    keywords.add(value)
+                    added++
+                }
+            }
+            if (added == 0) {
+                host.toast("这些关键字都已存在")
                 return@actionCard
             }
-            keywords.add(value)
             saveAndRefresh(keywords)
         })
 

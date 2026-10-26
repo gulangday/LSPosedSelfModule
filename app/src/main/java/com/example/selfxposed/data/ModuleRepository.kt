@@ -59,25 +59,23 @@ class ModuleRepository(private val activity: Activity) {
     }
 
     /**
-     * Hook 是否在该应用里跑过。
+     * Hook 是否在该应用里跑过：true=已注入，false=未注入，null=无法判断（应用没在运行）。
      *
-     * 正常情况模块能收到握手记录；但 targetSdk 30+ 的应用受包可见性限制，
-     * 根本调不到模块的 Provider，只能由 hook 在应用本地写一个运行标记，
-     * 模块随后用 root/Shizuku 读（这一步放后台，避免卡启动）。
+     * 判断依据：目标应用进程在运行，且 seen 标记是在这次启动之后写的。
+     * 应用没在运行时无法知道它这次启动有没有被注入，所以返回 null（界面显示"待确认"），
+     * 不能拿旧标记糊弄成"已连接"。
      */
-    fun hookDetected(pkg: String): Boolean {
-        if (ConfigClient.hookDetected(resolver, pkg)) return true
-        return hookCache[pkg] == true
-    }
+    fun hookDetected(pkg: String): Boolean? = hookCache[pkg]
 
-    private val hookCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val hookCache = java.util.concurrent.ConcurrentHashMap<String, Boolean?>()
     private var lastHookRefresh = 0L
 
-    /** 后台刷新 root 侧的 hook 状态；10 秒内不重复读，避免刷主页时反复拉起 su。 */
+    /** 后台刷新 root 侧的 hook 状态；2 秒内不重复读，避免刷主页时反复拉起 su。 */
     fun refreshHookStatuses(pkgs: List<String>, onChanged: () -> Unit) {
         val now = System.currentTimeMillis()
-        if (pkgs.isEmpty() || now - lastHookRefresh < 10_000L) return
+        if (pkgs.isEmpty() || now - lastHookRefresh < 2_000L) return
         lastHookRefresh = now
+        android.util.Log.i("SelfXposedRoot", "开始检测注入状态：$pkgs")
         Thread {
             var changed = false
             pkgs.forEach { pkg ->
@@ -91,16 +89,60 @@ class ModuleRepository(private val activity: Activity) {
         }.start()
     }
 
-    private fun readSeenViaRoot(pkg: String): Boolean = try {
-        val info = pm.getPackageInfo(pkg, 0)
-        if ((info.applicationInfo?.targetSdkVersion ?: 0) < 30) {
-            false
-        } else {
-            val out = RootShell.exec("cat /data/data/$pkg/files/selfxposed_seen 2>/dev/null")
-            (out.trim().toLongOrNull() ?: 0L) > 0L
+    /** seen 标记超过 7 天视为过期（仅用于"应用没在运行"时判断历史注入）。 */
+    private val seenMaxAgeMs = 7L * 24 * 60 * 60 * 1000
+
+    private fun readSeenViaRoot(pkg: String): Boolean? = try {
+        run {
+            // 同时拿：运行标记时间、进程是否在跑、进程已运行时间
+            val cmd = "P=\$(pidof $pkg 2>/dev/null | awk '{print \$1}'); " +
+                "S=\$(cat /data/data/$pkg/files/selfxposed_seen 2>/dev/null); " +
+                "if [ -n \"\$P\" ]; then " +
+                "E=\$(ps -o etime= -p \$P 2>/dev/null | tr -d ' '); " +
+                "echo \"run=1 seen=\$S etime=\$E\"; " +
+                "else echo \"run=0 seen=\$S\"; fi"
+            val out = RootShell.exec(cmd)
+            android.util.Log.i("SelfXposedRoot", "注入检测 $pkg → ${out.trim().replace('\n', ' ')}")
+            val seenAt = Regex("seen=(\\d+)").find(out)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            val running = out.contains("run=1")
+            if (running) {
+                // 进程在跑：seen 必须是在这次启动前后写的（留 10 秒容差，吸收命令延迟/时钟误差）
+                val etimeText = Regex("etime=([0-9:\\-]+)").find(out)?.groupValues?.get(1).orEmpty()
+                val etimes = parseEtime(etimeText)
+                val startedAt = System.currentTimeMillis() - etimes * 1000L
+                val injected = seenAt > 0L && seenAt >= startedAt - 10_000L
+                android.util.Log.i(
+                    "SelfXposedRoot",
+                    "注入判定 $pkg → seen=$seenAt startedAt=$startedAt 结果=$injected"
+                )
+                injected
+            } else {
+                // 没在运行：无法知道这次启动有没有注入 → 返回 null（待确认），
+                // 不能拿旧标记糊弄成"已连接"。
+                null
+            }
         }
     } catch (_: Throwable) {
-        false
+        null
+    }
+
+    /** 解析 ps 的 etime 格式：DD-HH:MM:SS / HH:MM:SS / MM:SS → 秒。 */
+    private fun parseEtime(text: String): Long {
+        var t = text.trim()
+        if (t.isEmpty()) return 0L
+        var days = 0L
+        if (t.contains("-")) {
+            days = t.substringBefore("-").toLongOrNull() ?: 0L
+            t = t.substringAfter("-")
+        }
+        val parts = t.split(":").mapNotNull { it.toLongOrNull() }
+        val seconds = when (parts.size) {
+            3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+            2 -> parts[0] * 60 + parts[1]
+            1 -> parts[0]
+            else -> 0L
+        }
+        return days * 86400 + seconds
     }
 
     fun removeTarget(pkg: String) {

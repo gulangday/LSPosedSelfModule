@@ -63,6 +63,17 @@ class AppSettingsScreen(
         } else {
             cfg.optBoolean("popupEnabled", false)
         }
+        // 未注入提示
+        if (repo.hookDetected(pkg) == false) {
+            into.addView(ui.card().apply {
+                addView(ui.label("模块还没注入到这个应用", 14, Palette.warning, true))
+                addView(ui.label(
+                    "弹窗提醒暂时不会生效：请确认 LSPosed 作用域已勾选该应用，然后重启它。",
+                    11, Palette.muted, false
+                ).apply { setPadding(0, ui.dp(4), 0, 0) })
+            })
+        }
+
         val popupChip = ui.statusChip(popupOn) { checked ->
             if (canRoot) {
                 val ok = com.example.selfxposed.Features.setRemote(pkg, com.example.selfxposed.Features.POPUP, checked)

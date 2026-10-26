@@ -16,7 +16,11 @@ object TargetFiles {
         val ruleTitles: List<String> = emptyList(),
         /** 版本伪装：伪装版本名 / 版本号（0 表示没设置） */
         val fakeName: String = "",
-        val fakeCode: Int = 0
+        val fakeCode: Int = 0,
+        /** 去广告：用户自定义的 SDK 前缀（空 = 用内置默认） */
+        val adSdkLines: List<String> = emptyList(),
+        /** 去广告：用户自定义的广告域名（空 = 用内置默认） */
+        val adUrlLines: List<String> = emptyList()
     ) {
         fun isOn(feature: String): Boolean = features[feature] == true
     }
@@ -54,6 +58,8 @@ object TargetFiles {
                 append("echo '@@M'; cat \$D/files/selfxposed_pick_mode.conf 2>/dev/null; echo; ")
                 append("echo '@@B'; test -f \$D/files/selfxposed_ball_off && echo 1 || echo 0; ")
                 append("echo '@@U'; cat \$D/files/selfxposed_update_block.conf 2>/dev/null; echo; ")
+                append("echo '@@A'; cat \$D/files/selfxposed_ad_sdk.conf 2>/dev/null; echo; ")
+                append("echo '@@W'; cat \$D/files/selfxposed_ad_urls.conf 2>/dev/null; echo; ")
                 append("echo '@@R'; cat \$D/shared_prefs/selfxposed_block.xml 2>/dev/null; echo")
             }
             val raw = RootShell.exec(command, 6_000L)
@@ -77,6 +83,8 @@ object TargetFiles {
                 line == "@@M" -> current = "M"
                 line == "@@B" -> current = "B"
                 line == "@@U" -> current = "U"
+                line == "@@A" -> current = "A"
+                line == "@@W" -> current = "W"
                 line == "@@R" -> current = "R"
                 else -> sections.getOrPut(current) { StringBuilder() }.append(line).append('\n')
             }
@@ -104,6 +112,17 @@ object TargetFiles {
         val fakeName = updateConf["fakeName"].orEmpty()
         val fakeCode = updateConf["fakeCode"]?.toIntOrNull() ?: 0
 
+        // 去广告：自定义 SDK 前缀（每行一个）
+        val adSdkLines = sections["A"]?.toString().orEmpty()
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        val adUrlLines = sections["W"]?.toString().orEmpty()
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
         val ruleXml = sections["R"]?.toString().orEmpty()
         val ruleMode = Regex("<string name=\"mode\">([^<]*)</string>")
             .find(ruleXml)?.groupValues?.get(1).orEmpty()
@@ -112,6 +131,6 @@ object TargetFiles {
             ?.let { block -> Regex("<string>(.*?)</string>").findAll(block).map { it.groupValues[1] }.toList() }
             .orEmpty()
 
-        return TargetState(features, pickMode, ballOff, ruleMode, ruleTitles, fakeName, fakeCode)
+        return TargetState(features, pickMode, ballOff, ruleMode, ruleTitles, fakeName, fakeCode, adSdkLines, adUrlLines)
     }
 }

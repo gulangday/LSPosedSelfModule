@@ -19,7 +19,7 @@ class HomeScreen(private val host: ScreenHost) {
         val label: String,
         val installed: Boolean,
         var enabled: Boolean,
-        val detected: Boolean,
+        val detected: Boolean?,
         val version: String?
     )
 
@@ -153,10 +153,15 @@ class HomeScreen(private val host: ScreenHost) {
             !entry.installed -> Triple("未安装", Palette.muted, Palette.surfaceMuted)
             // 主页未启用 = 模块不注入，Hook 自然不会连上
             !entry.enabled -> Triple("Hook 未连接", Palette.muted, Palette.surfaceMuted)
-            entry.detected -> Triple("Hook 已连接", Palette.success, Palette.successSoft)
-            else -> Triple("待检测：先启动一次目标应用", Palette.warning, Palette.warningSoft)
+            entry.detected == true -> Triple("Hook 已连接", Palette.success, Palette.successSoft)
+            entry.detected == false -> Triple("未注入：点我看怎么修", Palette.warning, Palette.warningSoft)
+            else -> Triple("待确认：打开一次目标应用", Palette.muted, Palette.surfaceMuted)
         }
         val hookChip = ui.chip(chipText, chipColor, chipBackground)
+        if (entry.enabled && entry.detected != true) {
+            hookChip.isClickable = true
+            hookChip.setOnClickListener { showNotInjectedHelp(entry) }
+        }
         details.addView(hookChip)
 
         left.addView(details, LinearLayout.LayoutParams(0, -2, 1f))
@@ -189,8 +194,9 @@ class HomeScreen(private val host: ScreenHost) {
                 // 同步 Hook 提示：未启用 = 模块不注入，自然没有连接
                 val (newText, newColor, newBg) = when {
                     !target -> Triple("Hook 未连接", Palette.muted, Palette.surfaceMuted)
-                    entry.detected -> Triple("Hook 已连接", Palette.success, Palette.successSoft)
-                    else -> Triple("待检测：先启动一次目标应用", Palette.warning, Palette.warningSoft)
+                    entry.detected == true -> Triple("Hook 已连接", Palette.success, Palette.successSoft)
+                    entry.detected == false -> Triple("未注入：点我看怎么修", Palette.warning, Palette.warningSoft)
+                    else -> Triple("待确认：打开一次目标应用", Palette.muted, Palette.surfaceMuted)
                 }
                 hookChip.text = newText
                 hookChip.setTextColor(newColor)
@@ -218,6 +224,20 @@ class HomeScreen(private val host: ScreenHost) {
             else "写入失败，检查 Root / Shizuku 授权"
         )
         return ok
+    }
+
+    /** 未注入说明：作用域没勾 / 没重启 / 重装后作用域丢失。 */
+    private fun showNotInjectedHelp(entry: Entry) {
+        ui.dialog(
+            title = "模块还没注入到「${entry.label}」",
+            message = "按顺序检查：\n\n" +
+                "1. 打开 LSPosed 管理器 → 模块 → 自用模块 → 作用域，确认勾选了「${entry.label}」\n\n" +
+                "2. 从最近任务里划掉「${entry.label}」，再重新打开\n\n" +
+                "3. 如果刚卸载重装过这个应用，作用域会被清掉，需要重新勾选\n\n" +
+                "完成后回到模块，重新打开这个应用，状态会变成「Hook 已连接」。",
+            confirmText = "知道了",
+            cancelText = null
+        )
     }
 
     private fun confirmRemove(entry: Entry) {

@@ -20,7 +20,7 @@ class PermissionsScreen(private val host: ScreenHost) {
 
         addRootCard(into)
 
-        // ---- 后台常驻：状态跟随「通知权限」，有权限即常驻，没有则未开启 ----
+        // ---- 后台常驻：状态跟随「通知权限」，有权限即常驻；点击卡片跳系统电池设置 ----
         val notifyAllowed = hasNotificationPermission()
         // 自动对齐：有权限 → 打开常驻；权限被撤销 → 关闭常驻
         if (notifyAllowed && !KeepAlive.isEnabled(ui.activity)) {
@@ -35,24 +35,25 @@ class PermissionsScreen(private val host: ScreenHost) {
             if (notifyAllowed) Palette.success else Palette.muted,
             if (notifyAllowed) Palette.successSoft else Palette.surfaceMuted
         ).apply {
-            if (notifyAllowed) {
-                // 有通知权限时不允许手动关闭
-                isClickable = false
-            } else {
-                isClickable = true
-                setOnClickListener { openNotificationSettings() }
-            }
+            isClickable = false
         }
         into.addView(ui.card().apply {
             addView(rowWith("后台常驻", keepChip))
             addView(ui.label(
                 if (notifyAllowed) {
-                    "已随通知权限自动开启：保持一条常驻通知，提高被唤醒的成功率"
+                    "已开启：服务已启动（保持一条常驻通知）"
                 } else {
-                    "未开启：点右侧标签授予通知权限后会自动常驻（常驻需要一条通知）"
+                    "未开启：点这里授予通知权限后会自动常驻"
                 },
                 11, Palette.muted, false
             ).apply { setPadding(0, ui.dp(4), 0, 0) })
+            addView(ui.label(
+                "系统限制未关闭：点卡片去电池设置里选择「无限制」，否则系统可能杀掉进程",
+                11, Palette.warning, false
+            ).apply { setPadding(0, ui.dp(4), 0, 0) })
+            ui.pressable(this, {
+                if (!hasNotificationPermission()) openNotificationSettings() else openBatterySettings()
+            })
         })
 
         // ---- 自启动（建议开启，非必需）----
@@ -123,6 +124,25 @@ class PermissionsScreen(private val host: ScreenHost) {
         return ui.activity.checkSelfPermission(
             "android.permission.POST_NOTIFICATIONS"
         ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /** 跳系统电池设置：让系统别把这个应用杀掉（各 ROM 页面不同，逐个尝试）。 */
+    private fun openBatterySettings() {
+        val candidates = listOf(
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+            Intent("android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS")
+                .setData(android.net.Uri.parse("package:${ui.activity.packageName}")),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(android.net.Uri.parse("package:${ui.activity.packageName}"))
+        )
+        for (intent in candidates) {
+            try {
+                ui.activity.startActivity(intent)
+                return
+            } catch (_: Throwable) {
+            }
+        }
+        host.toast("无法打开电池设置")
     }
 
     private fun openNotificationSettings() {
