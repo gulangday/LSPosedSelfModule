@@ -13,6 +13,9 @@ import java.io.File
 object Features {
     private const val FILE = "selfxposed_features.conf"
 
+    /** 该目标应用的模块总开关：关闭时所有功能都不工作。 */
+    const val MASTER = "master"
+
     const val POPUP = "popup"
     const val BLOCK = "block"
     const val TOAST = "toast"

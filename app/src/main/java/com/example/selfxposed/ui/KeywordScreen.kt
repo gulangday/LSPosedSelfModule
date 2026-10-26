@@ -64,8 +64,16 @@ class KeywordScreen(
         } else {
             keywords.forEach { keyword ->
                 into.addView(ui.actionCard(keyword, "点击删除") {
-                    keywords.remove(keyword)
-                    saveAndRefresh(keywords)
+                    ui.dialog(
+                        title = "删除关键字",
+                        message = "删除「$keyword」后，这条文字不再触发拦截。",
+                        confirmText = "删除",
+                        cancelText = "取消",
+                        onConfirm = {
+                            keywords.remove(keyword)
+                            saveAndRefresh(keywords)
+                        }
+                    )
                 })
             }
         }

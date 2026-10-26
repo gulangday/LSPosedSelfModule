@@ -96,9 +96,22 @@ class DialogRulesScreen(
             host.refresh()
         })
         into.addView(ui.actionCard("清除规则", "删除这些规则和截图，下次弹窗重新询问") {
-            var ok = true
-            targets.forEach { pkg -> if (!DialogRules.clear(pkg)) ok = false }
-            if (ok) host.refresh() else host.toast("清除失败，检查 root / Shizuku 授权")
+            ui.dialog(
+                title = "清除规则",
+                message = "将删除这些应用学到的全部规则和拦截截图，下次弹窗会重新询问。",
+                confirmText = "清除",
+                cancelText = "取消",
+                onConfirm = {
+                    var ok = true
+                    targets.forEach { pkg -> if (!DialogRules.clear(pkg)) ok = false }
+                    if (ok) {
+                        host.toast("已清除")
+                        host.refresh()
+                    } else {
+                        host.toast("清除失败，检查 Root / Shizuku 授权")
+                    }
+                }
+            )
         })
     }
 

@@ -28,6 +28,12 @@ object TargetFiles {
     /** 只看缓存，不发起命令；用于页面首帧快速渲染。 */
     fun peek(pkg: String): TargetState? = cache[pkg]?.second
 
+    /** 只读缓存，但超过 maxAgeMs 视为没有（用于主页判断是否需要后台补读）。 */
+    fun peekFresh(pkg: String, maxAgeMs: Long): TargetState? {
+        val entry = cache[pkg] ?: return null
+        return if (System.currentTimeMillis() - entry.first <= maxAgeMs) entry.second else null
+    }
+
     fun load(pkg: String, force: Boolean = false): TargetState {
         val now = System.currentTimeMillis()
         if (!force) {

@@ -37,8 +37,17 @@ class LogsScreen(
 
         into.addView(ui.actionCard("刷新日志", "重新读取当前记录") { host.refresh() })
         into.addView(ui.actionCard("清空日志", "只清空当前应用的记录") {
-            repo.clearLogs(pkg)
-            host.refresh()
+            ui.dialog(
+                title = "清空日志",
+                message = "将删除「$name」的全部运行记录，不可恢复。",
+                confirmText = "清空",
+                cancelText = "取消",
+                onConfirm = {
+                    repo.clearLogs(pkg)
+                    host.toast("已清空")
+                    host.refresh()
+                }
+            )
         })
     }
 

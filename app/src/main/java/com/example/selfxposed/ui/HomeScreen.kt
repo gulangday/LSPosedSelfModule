@@ -39,7 +39,7 @@ class HomeScreen(private val host: ScreenHost) {
                 label = repo.label(pkg),
                 installed = repo.isInstalled(pkg),
                 // 首帧只用缓存，避免冷启动等 Shizuku 绑定；后台会补读并刷新
-                enabled = canRootHome && TargetFiles.peek(pkg)?.isOn(Features.BLOCK) == true,
+                enabled = canRootHome && TargetFiles.peek(pkg)?.isOn(Features.MASTER) == true,
                 detected = repo.hookDetected(pkg),
                 version = repo.versionName(pkg)
             )
@@ -65,15 +65,21 @@ class HomeScreen(private val host: ScreenHost) {
             ui.activity.runOnUiThread { host.refresh() }
         }
 
-        // 后台补读功能开关状态：首帧先用缓存，读完再刷新一次
+        // 后台补读功能开关状态：首帧先用缓存，读到与当前显示不一致时再刷新（避免无限刷新）
         if (canRootHome) {
-            val missing = entries.map { it.pkg }.filter { TargetFiles.peek(it) == null }
-            if (missing.isNotEmpty()) {
-                Thread {
-                    missing.forEach { pkg -> TargetFiles.load(pkg, force = true) }
-                    ui.activity.runOnUiThread { host.refresh() }
-                }.start()
-            }
+            val rendered = entries.associate { it.pkg to it.enabled }
+            Thread {
+                var changed = false
+                entries.forEach { entry ->
+                    val fresh = try {
+                        TargetFiles.load(entry.pkg, force = true)
+                    } catch (_: Throwable) {
+                        null
+                    } ?: return@forEach
+                    if (fresh.isOn(Features.MASTER) != rendered[entry.pkg]) changed = true
+                }
+                if (changed) ui.activity.runOnUiThread { host.refresh() }
+            }.start()
         }
     }
 
@@ -145,10 +151,13 @@ class HomeScreen(private val host: ScreenHost) {
 
         val (chipText, chipColor, chipBackground) = when {
             !entry.installed -> Triple("未安装", Palette.muted, Palette.surfaceMuted)
+            // 主页未启用 = 模块不注入，Hook 自然不会连上
+            !entry.enabled -> Triple("Hook 未连接", Palette.muted, Palette.surfaceMuted)
             entry.detected -> Triple("Hook 已连接", Palette.success, Palette.successSoft)
             else -> Triple("待检测：先启动一次目标应用", Palette.warning, Palette.warningSoft)
         }
-        details.addView(ui.chip(chipText, chipColor, chipBackground))
+        val hookChip = ui.chip(chipText, chipColor, chipBackground)
+        details.addView(hookChip)
 
         left.addView(details, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(left, LinearLayout.LayoutParams(0, -1, 1f))
@@ -160,7 +169,7 @@ class HomeScreen(private val host: ScreenHost) {
         val canRoot = WorkMode.canUseRoot(ui.activity)
         val on = entry.enabled
         val statusChip = ui.chip(
-            if (on) "已开启" else "未开启",
+            if (on) "模块已启用" else "未启用",
             if (on) Palette.success else Palette.muted,
             if (on) Palette.successSoft else Palette.surfaceMuted
         ).apply {
@@ -170,13 +179,22 @@ class HomeScreen(private val host: ScreenHost) {
             val target = !entry.enabled
             val ok = toggle(entry, target)
             if (ok) {
-                // 只更新这个标签，不重建整页
+                // 只更新这两个标签，不重建整页
                 entry.enabled = target
-                statusChip.text = if (target) "已开启" else "未开启"
+                statusChip.text = if (target) "模块已启用" else "未启用"
                 statusChip.setTextColor(if (target) Palette.success else Palette.muted)
                 statusChip.background = ui.rounded(
                     if (target) Palette.successSoft else Palette.surfaceMuted, 10
                 )
+                // 同步 Hook 提示：未启用 = 模块不注入，自然没有连接
+                val (newText, newColor, newBg) = when {
+                    !target -> Triple("Hook 未连接", Palette.muted, Palette.surfaceMuted)
+                    entry.detected -> Triple("Hook 已连接", Palette.success, Palette.successSoft)
+                    else -> Triple("待检测：先启动一次目标应用", Palette.warning, Palette.warningSoft)
+                }
+                hookChip.text = newText
+                hookChip.setTextColor(newColor)
+                hookChip.background = ui.rounded(newBg, 10)
             }
         }
         right.addView(statusChip)
@@ -188,15 +206,16 @@ class HomeScreen(private val host: ScreenHost) {
 
     private fun toggle(entry: Entry, checked: Boolean): Boolean {
         if (!WorkMode.canUseRoot(ui.activity)) {
-            host.toast("需要 root / Shizuku 能力")
+            host.toast("需要 Root / Shizuku 模式")
             return false
         }
-        val ok = Features.setRemote(entry.pkg, Features.BLOCK, checked)
+        // 主页开关 = 该应用的模块总开关，关闭时所有功能都不工作
+        val ok = Features.setRemote(entry.pkg, Features.MASTER, checked)
         TargetFiles.invalidate(entry.pkg)
-        repo.log(entry.pkg, if (checked) "已开启拦截弹窗" else "已关闭拦截弹窗")
+        repo.log(entry.pkg, if (checked) "模块已启用" else "模块已停用")
         host.toast(
-            if (ok) ("已" + (if (checked) "开启" else "关闭") + "「拦截弹窗」，重启目标应用生效")
-            else "写入失败，检查 root / Shizuku 授权"
+            if (ok) (if (checked) "模块已启用，重启目标应用生效" else "模块已停用")
+            else "写入失败，检查 Root / Shizuku 授权"
         )
         return ok
     }

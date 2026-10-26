@@ -24,9 +24,37 @@ class UpdateBlockScreen(
         val canRoot = WorkMode.canUseRoot(ui.activity)
         // 一次 shell 读回全部状态（带 30 秒缓存），避免多次 IPC 卡顿
         val state = if (canRoot) com.example.selfxposed.TargetFiles.load(pkg) else com.example.selfxposed.TargetFiles.TargetState()
-        val blockOn = canRoot && state.isOn(com.example.selfxposed.Features.BLOCK)
+        val masterOn = canRoot && state.isOn(com.example.selfxposed.Features.MASTER)
+        val blockOn = masterOn && state.isOn(com.example.selfxposed.Features.BLOCK)
 
         into.addView(ui.backRow("‹  功能") { host.openFeatures() })
+
+        // 总开关（主页）没开时：功能照常显示原状态，但提示"不会执行"、不可操作；设置本身保留
+        if (!masterOn) {
+            into.addView(ui.card(Palette.hero).apply {
+                elevation = 0f
+                addView(ui.label("模块未启用，以下功能不会执行", 15, Palette.ink, true))
+                addView(ui.label(
+                    "主页的「模块已启用」控制模块是否运行：\n" +
+                        "· 未启用时，模块对这个应用什么都不做\n" +
+                        "· 下面已保存的设置会原样保留，主页启用后立即按原设置生效",
+                    12, Palette.muted, false
+                ).apply { setPadding(0, ui.dp(8), 0, 0) })
+            })
+            // 模块未启用时功能一概不可用：标题不带"已开启"，避免显示与实际不一致
+            listOf(
+                "启用拦截" to "拦截命中规则的弹窗",
+                "拦截 Toast 提示" to "按关键字拦掉 Toast",
+                "拦截方式" to "悬浮窗 / 自动拦截",
+                "关键字" to "自定义要拦截的文字",
+                "拦截提示样式" to "字号、位置、背景色",
+                "查看 / 清除规则" to "该应用学到的拦截规则"
+            ).forEach { (title, subtitle) ->
+                into.addView(ui.lockedCard(title, subtitle, tag = "模块未启用"))
+            }
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            return
+        }
 
         // ---- 最上面的公告：讲清楚现在怎么用 ----
         into.addView(ui.card(Palette.hero).apply {

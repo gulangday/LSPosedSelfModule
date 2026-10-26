@@ -32,18 +32,50 @@ class FeaturesScreen(private val host: ScreenHost) {
             statusColor = statusColor(Features.BLOCK, targets, canRoot),
             statusBackground = statusBackground(Features.BLOCK, targets, canRoot)
         ) { pickTarget(Features.BLOCK) { pkg, name -> host.openUpdateBlock(pkg, name) } })
+
+        // 启动早期 Shizuku 可能还没绑定好，读到空状态会显示"未启用"；
+        // 后台补读一次，只有和当前显示不一致时才刷新（避免无限刷新）。
+        if (canRoot && targets.isNotEmpty()) {
+            val renderedPopup = enabledCount(Features.POPUP, targets, canRoot)
+            val renderedBlock = enabledCount(Features.BLOCK, targets, canRoot)
+            Thread {
+                var freshPopup = 0
+                var freshBlock = 0
+                targets.forEach { pkg ->
+                    val state = try {
+                        TargetFiles.load(pkg, force = true)
+                    } catch (_: Throwable) {
+                        null
+                    } ?: return@forEach
+                    if (state.isOn(Features.MASTER)) {
+                        if (state.isOn(Features.POPUP)) freshPopup++
+                        if (state.isOn(Features.BLOCK)) freshBlock++
+                    }
+                }
+                if (freshPopup != renderedPopup || freshBlock != renderedBlock) {
+                    ui.activity.runOnUiThread { host.refresh() }
+                }
+            }.start()
+        }
     }
 
+    /**
+     * 功能页卡片的状态 = 「主页已启用」且「该功能开关已开启」的应用数。
+     * 主页没启用时该功能不可用，自然不计入。
+     */
     private fun enabledCount(feature: String, targets: List<String>, canRoot: Boolean): Int {
         if (!canRoot || targets.isEmpty()) return 0
-        return targets.count { pkg -> TargetFiles.load(pkg).isOn(feature) }
+        return targets.count { pkg ->
+            val state = TargetFiles.load(pkg)
+            state.isOn(Features.MASTER) && state.isOn(feature)
+        }
     }
 
     private fun statusText(feature: String, targets: List<String>, canRoot: Boolean): String {
         if (targets.isEmpty()) return "先添加目标应用"
         if (!canRoot) return "需要 Root / Shizuku 模式"
         val count = enabledCount(feature, targets, canRoot)
-        return if (count > 0) "已开启 $count 个应用" else "未开启"
+        return if (count > 0) "已启用 $count 个应用" else "未启用"
     }
 
     private fun statusColor(feature: String, targets: List<String>, canRoot: Boolean): Int {
@@ -69,8 +101,10 @@ class FeaturesScreen(private val host: ScreenHost) {
         }
         val canRoot = WorkMode.canUseRoot(ui.activity)
         val labels = targets.map { pkg ->
-            val on = canRoot && TargetFiles.load(pkg).isOn(feature)
-            Triple(repo.label(pkg), if (!canRoot) "未知" else if (on) "已开启" else "未开启", on)
+            val state = if (canRoot) TargetFiles.load(pkg) else null
+            // 主页未启用时该功能不可用，显示未启用
+            val on = state != null && state.isOn(Features.MASTER) && state.isOn(feature)
+            Triple(repo.label(pkg), if (!canRoot) "未知" else if (on) "已启用" else "未启用", on)
         }
         ui.statusListDialog(
             title = "选择目标应用",

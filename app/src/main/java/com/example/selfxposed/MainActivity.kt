@@ -578,19 +578,68 @@ class MainActivity : Activity(), ScreenHost {
         scroll.post { scroll.scrollTo(0, scrollY) }
     }
 
-    /** 当前正在显示的提示，新的提示会先取消它，做到"覆盖"而不是排队。 */
-    private var currentToast: Toast? = null
+    /**
+     * 自绘提示条：样式跟软件主题一致（白底深色字 + 圆角），显示 2 秒、淡出 1 秒，
+     * 新提示直接覆盖旧的。
+     * 不用系统 Toast —— 它的时长只有 2s/3.5s 两档，凑时长只能重复 show，看起来像弹两遍。
+     */
+    private var toastView: TextView? = null
+    private var lastToastMessage: String? = null
+    private var lastToastAt = 0L
     private val toastHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val fadeOutToast = Runnable {
+        val view = toastView ?: return@Runnable
+        view.animate()
+            .alpha(0f)
+            .setDuration(1_000L)
+            .withEndAction {
+                try {
+                    (view.parent as? android.view.ViewGroup)?.removeView(view)
+                } catch (_: Throwable) {
+                }
+                if (toastView === view) toastView = null
+            }
+            .start()
+    }
 
     override fun toast(message: String) {
-        currentToast?.cancel()
-        val toast = Toast.makeText(this, message, Toast.LENGTH_SHORT)
-        currentToast = toast
-        toast.show()
-        // LENGTH_SHORT 约 2 秒，再续一次凑到约 5 秒
-        toastHandler.postDelayed({
-            if (currentToast === toast) toast.show()
-        }, 2_800L)
+        // 防抖：500ms 内的重复消息不再弹（避免一次操作触发两次回调）
+        val now = System.currentTimeMillis()
+        if (message == lastToastMessage && now - lastToastAt < 500L) return
+        lastToastMessage = message
+        lastToastAt = now
+        try {
+            val root = window.decorView as? android.view.ViewGroup ?: return
+            // 覆盖旧提示
+            toastView?.let {
+                toastHandler.removeCallbacks(fadeOutToast)
+                it.animate().cancel()
+                (it.parent as? android.view.ViewGroup)?.removeView(it)
+            }
+            toastView = null
+
+            val view = TextView(this).apply {
+                text = message
+                setTextColor(Palette.ink)
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(10))
+                background = ui.rounded(Palette.surface, 18)
+                elevation = ui.dp(6).toFloat()
+            }
+            val params = android.widget.FrameLayout.LayoutParams(-2, -2).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                bottomMargin = ui.dp(150)
+                leftMargin = ui.dp(24)
+                rightMargin = ui.dp(24)
+            }
+            root.addView(view, params)
+            toastView = view
+            toastHandler.removeCallbacks(fadeOutToast)
+            // 显示 2 秒后，用 1 秒淡化消失
+            toastHandler.postDelayed(fadeOutToast, 2_000L)
+        } catch (_: Throwable) {
+        }
     }
 
     override fun versionName(): String = try {
@@ -615,7 +664,9 @@ class MainActivity : Activity(), ScreenHost {
 
     private fun handleBack() {
         when (currentPage) {
-            PAGE_APP, PAGE_PICKER -> renderPage(PAGE_HOME, animate = true)
+            // 应用设置页是从「功能」进来的，返回回功能页
+            PAGE_APP -> renderPage(PAGE_FEATURES, animate = true)
+            PAGE_PICKER -> renderPage(PAGE_HOME, animate = true)
             PAGE_LOGS -> backFromLogs()
             PAGE_HELP -> renderPage(if (previousPage == PAGE_SETTINGS) PAGE_SETTINGS else PAGE_HOME, animate = true)
             PAGE_PERMISSIONS, PAGE_ABOUT -> renderPage(PAGE_SETTINGS, animate = true)

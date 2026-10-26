@@ -23,12 +23,40 @@ class AppSettingsScreen(
     fun render(into: LinearLayout) {
         val cfg = repo.config(pkg)
 
-        into.addView(ui.backRow("‹  返回主页") { host.openHome() })
+        into.addView(ui.backRow("‹  功能") { host.openFeatures() })
         into.addView(ui.sectionTitle(name))
         into.addView(ui.label(pkg, 12, Palette.muted, false).apply { setPadding(ui.dp(2), 0, 0, 0) })
         into.addView(ui.hint("修改后点「保存设置」；预览不会写入配置。"))
 
         val canRoot = WorkMode.canUseRoot(ui.activity)
+        // 主页的「模块已启用」控制模块是否运行：未启用时功能照常显示原状态，但不执行、不可操作
+        val masterOn = canRoot &&
+            com.example.selfxposed.TargetFiles.load(pkg).isOn(com.example.selfxposed.Features.MASTER)
+        if (!masterOn) {
+            into.addView(ui.card(Palette.hero).apply {
+                elevation = 0f
+                addView(ui.label("模块未启用，以下功能不会执行", 15, Palette.ink, true))
+                addView(ui.label(
+                    "主页的「模块已启用」控制模块是否运行：\n" +
+                        "· 未启用时，模块对这个应用什么都不做\n" +
+                        "· 下面已保存的设置会原样保留，主页启用后立即按原设置生效",
+                    12, Palette.muted, false
+                ).apply { setPadding(0, ui.dp(8), 0, 0) })
+            })
+            listOf(
+                "启用提示通知" to "在目标应用打开时弹出提示",
+                "弹窗文字" to "底部提示的文字内容",
+                "显示时长" to "提示停留的时间",
+                "淡出时长" to "提示淡出动画的时间",
+                "预览弹窗" to "按当前输入预览一次",
+                "保存设置" to "保存当前配置"
+            ).forEach { (title, subtitle) ->
+                into.addView(ui.lockedCard(title, subtitle, tag = "模块未启用"))
+            }
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            into.addView(ui.actionCard("移除目标应用", "从主页移除，并关闭它的开关") { confirmRemove() })
+            return
+        }
         // 有 root/Shizuku 时开关写在目标应用本地；否则存模块配置（只对 targetSdk < 30 的应用生效）
         val popupOn = if (canRoot) {
             com.example.selfxposed.TargetFiles.load(pkg).isOn(com.example.selfxposed.Features.POPUP)

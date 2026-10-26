@@ -18,6 +18,8 @@ class PermissionsScreen(private val host: ScreenHost) {
         into.addView(ui.backRow("‹  设置") { host.openSettings() })
         into.addView(ui.sectionTitle("权限"))
 
+        addRootCard(into)
+
         // ---- 后台常驻：状态跟随「通知权限」，有权限即常驻，没有则未开启 ----
         val notifyAllowed = hasNotificationPermission()
         // 自动对齐：有权限 → 打开常驻；权限被撤销 → 关闭常驻
@@ -68,6 +70,52 @@ class PermissionsScreen(private val host: ScreenHost) {
             ).apply { setPadding(0, ui.dp(6), 0, 0) })
             ui.pressable(this, { openAutoStart() })
         })
+    }
+
+    /** Root 授权：点击触发 su 请求，Magisk 会弹授权窗。 */
+    private fun addRootCard(into: LinearLayout) {
+        val chip = ui.chip("检测中…", Palette.muted, Palette.surfaceMuted)
+
+        fun applyState(ok: Boolean) {
+            chip.text = if (ok) "已授权" else "未授权"
+            chip.setTextColor(if (ok) Palette.success else Palette.warning)
+            chip.background = ui.rounded(if (ok) Palette.successSoft else Palette.warningSoft, 10)
+        }
+
+        val card = ui.card().apply {
+            addView(rowWith("Root 授权", chip))
+            addView(ui.label(
+                "点击卡片请求 root 权限，系统会弹出授权窗（需要 Root 模式）；" +
+                    "Shizuku / 非 Root 模式不需要这一步",
+                11, Palette.muted, false
+            ).apply { setPadding(0, ui.dp(4), 0, 0) })
+            ui.pressable(this, {
+                host.toast("正在请求 root，请在弹窗里选择允许")
+                Thread {
+                    val ok = try {
+                        // 每次都真实执行一次 su，不走缓存，已授权时也会重新拉取一次
+                        com.example.selfxposed.RootShell.requestRootNow()
+                    } catch (_: Throwable) {
+                        false
+                    }
+                    ui.activity.runOnUiThread {
+                        applyState(ok)
+                        host.toast(if (ok) "已获得 root 权限" else "未获得 root 权限")
+                    }
+                }.start()
+            })
+        }
+        into.addView(card)
+
+        // 后台查一次当前状态（不阻塞页面）
+        Thread {
+            val ok = try {
+                com.example.selfxposed.RootShell.hasRootCached()
+            } catch (_: Throwable) {
+                false
+            }
+            ui.activity.runOnUiThread { applyState(ok) }
+        }.start()
     }
 
     private fun hasNotificationPermission(): Boolean {

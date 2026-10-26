@@ -303,6 +303,7 @@ class MainHook : IXposedHookLoadPackage {
                             // Android 12+ 的 Toast.getView() 返回 null（系统统一渲染），
                             // 所以不能用 view.context 拿 context，走当前应用的 Application。
                             val context = currentApp() ?: return
+                            if (!Features.isOn(context, Features.MASTER)) return
                             if (!Features.isOn(context, Features.TOAST)) return
                             val text = toastText(toast) ?: return
                             if (text.isBlank()) return
@@ -375,9 +376,11 @@ class MainHook : IXposedHookLoadPackage {
             logFramework("自用模块: 写运行标记失败：${describe(t)}")
         }
 
-        // 悬浮球：只有开启「拦截弹窗」功能才显示
+        // 悬浮球：总开关 + 「拦截弹窗」功能都开启才显示
         try {
-            if (Features.isOn(activity, Features.BLOCK)) installPickBall(activity, pkg)
+            if (Features.isOn(activity, Features.MASTER) && Features.isOn(activity, Features.BLOCK)) {
+                installPickBall(activity, pkg)
+            }
         } catch (t: Throwable) {
             logFramework("自用模块: 悬浮球添加失败：${describe(t)}")
         }
@@ -396,12 +399,15 @@ class MainHook : IXposedHookLoadPackage {
         }
         val cfg = loaded.cfg
 
-        // 去更新：每个进程只安装一次（版本伪装 / 更新弹窗拦截）。
-        if (updateHooked.add(pkg)) installUpdateBlockHooks(activity, pkg, cfg)
+        // 去更新：总开关开启后才安装（版本伪装 / 更新弹窗拦截）。
+        if (Features.isOn(activity, Features.MASTER) && updateHooked.add(pkg)) {
+            installUpdateBlockHooks(activity, pkg, cfg)
+        }
 
         // 功能开关：默认关闭。优先看目标应用本地的 features 文件；
         // 非 Root 模式下写不进去，所以再回退到模块配置（只对 targetSdk < 30 的应用读得到）。
-        val popupOn = Features.isOn(activity, Features.POPUP) || cfg.optBoolean("popupEnabled", false)
+        val popupOn = Features.isOn(activity, Features.MASTER) &&
+            (Features.isOn(activity, Features.POPUP) || cfg.optBoolean("popupEnabled", false))
         if (!popupOn) {
             logOnce(disabledLogged, pkg) { writeLog(activity, pkg, "Hook 已触发，但「弹窗提醒」功能未启用") }
             logFramework("自用模块: $pkg 弹窗提醒未启用")
@@ -523,6 +529,7 @@ class MainHook : IXposedHookLoadPackage {
                         val dialog = param.thisObject as? android.app.Dialog ?: return
                         try {
                             val context = dialog.context ?: return
+                            if (!Features.isOn(context, Features.MASTER)) return
                             if (!Features.isOn(context, Features.BLOCK)) return
                             // 自动拦截：先把窗口设透明，布局照常进行，用户看不到它弹出来
                             if (loadBlockRules(context).mode == "block") {
@@ -541,6 +548,7 @@ class MainHook : IXposedHookLoadPackage {
                         if (showingConfirm) return
                         try {
                             val context = dialog.context ?: return
+                            if (!Features.isOn(context, Features.MASTER)) return
                             if (!Features.isOn(context, Features.BLOCK)) return
                             val mode = loadBlockRules(context).mode
                             if (mode == "allow") return

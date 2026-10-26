@@ -61,7 +61,15 @@ object RootShell {
                     android.util.Log.i("SelfXposedRoot", "direct(${argv[0]}) out=${output.take(100).replace('\n', ' ')}")
                     return output
                 }
-            } catch (_: Throwable) {
+                android.util.Log.i(
+                    "SelfXposedRoot",
+                    "direct 失败 argv=${argv.joinToString(" ")} finished=$finished out=${output.take(120).replace('\n', ' ')}"
+                )
+            } catch (t: Throwable) {
+                android.util.Log.i(
+                    "SelfXposedRoot",
+                    "direct 异常 argv=${argv.joinToString(" ")} ${t.javaClass.simpleName}: ${t.message}"
+                )
             }
         }
         return ""
@@ -120,6 +128,19 @@ object RootShell {
             }
         }
         val granted = exec("id", PROBE_TIMEOUT_MS).contains("uid=0")
+        cached = granted
+        checkedAt = System.currentTimeMillis()
+        return granted
+    }
+
+    /**
+     * 主动请求 root：优先直接走 su（这样每次点都会真正拉起 Magisk 授权/记录一次），
+     * 只有在 su 不可用时才退回 Shizuku 通道。
+     */
+    fun requestRootNow(): Boolean {
+        val direct = execDirect("id", PROBE_TIMEOUT_MS)
+        val output = if (direct.isNotBlank()) direct else exec("id", PROBE_TIMEOUT_MS)
+        val granted = output.contains("uid=0")
         cached = granted
         checkedAt = System.currentTimeMillis()
         return granted
