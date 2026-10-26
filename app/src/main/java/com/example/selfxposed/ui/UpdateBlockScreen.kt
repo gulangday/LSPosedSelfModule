@@ -59,6 +59,8 @@ class UpdateBlockScreen(
                     if (ok) ("已" + (if (checked) "启用" else "关闭") + "，重启目标应用生效")
                     else "写入失败，检查 Root / Shizuku 授权"
                 )
+                // 总开关变化会影响整页可用性，刷新一次（会自动恢复滚动位置）
+                if (ok) host.refresh()
                 ok
             }
         }
@@ -75,6 +77,25 @@ class UpdateBlockScreen(
             addView(row)
             if (!canRoot) addView(ui.label("需要 Root / Shizuku 模式才能写入目标应用", 11, Palette.muted, false))
         })
+
+        // 「启用拦截」是总开关：没开启时其余功能一律置灰
+        if (!blockOn) {
+            val reason = if (!canRoot) "需要 Root / Shizuku 模式" else "开启上方「启用拦截」总开关后可用"
+            val tag = if (!canRoot) "需要 Root / Shizuku 模式" else "总开关未开"
+            listOf(
+                "拦截 Toast 提示" to "按关键字拦掉目标应用自己弹的 Toast",
+                "拦截方式" to "悬浮窗 / 自动拦截",
+                "悬浮球" to "点选要拦截的弹窗",
+                "拦截提示样式" to "字号、位置、背景色",
+                "关键字" to "自定义要拦截的文字，命中即拦",
+                "查看 / 清除规则" to "该应用当前学到的拦截规则"
+            ).forEach { (title, subtitle) ->
+                into.addView(ui.lockedCard(title, subtitle, tag = tag))
+            }
+            if (!canRoot) into.addView(ui.label(reason, 11, Palette.muted, false))
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            return
+        }
 
         // Toast 拦截：只能拦目标应用自己弹的 Toast（系统/其他应用弹的拦不到）
         val toastChip = ui.statusChip(canRoot && state.isOn(com.example.selfxposed.Features.TOAST)) { checked ->

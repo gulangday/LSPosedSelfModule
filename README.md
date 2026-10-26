@@ -112,7 +112,7 @@ Provider 按 LSPosed 的注入模型必须是 `exported=true`，因此对已安�
 
 以下是这个项目一路踩出来的问题，**新增功能前先过一遍**，能省很多返工。
 
-### 1. 功能必须"默认关闭 + 按应用开启"
+### 1. 功能必须"默认关闭 + 按应用开启"，并且每个功能都要有总开关
 
 - 每个功能对每个目标应用一个开关，状态写在**目标应用本地**的
   `files/selfxposed_features.conf`（`Features` 类，形如 `block=1`、`toast=0`）。
@@ -120,6 +120,11 @@ Provider 按 LSPosed 的注入模型必须是 `exported=true`，因此对已安�
   1. `Features` 加常量（如 `const val XXX = "xxx"`）；
   2. hook 侧用 `Features.isOn(context, XXX)` 判断，**默认不做事**；
   3. 功能页放「启用」开关，用 `Features.setRemote(pkg, XXX, checked)` 写入。
+- **每个功能页的第一个开关是总开关**（如拦截弹窗的「启用拦截」、弹窗的「启用提示通知」）：
+  - 总开关**未开启时，该页其余所有功能项必须用 `ui.lockedCard(...)` 置灰**，不允许操作；
+  - 只有「查看日志」这类与功能状态无关的入口可以保留；
+  - 切换总开关后要 `host.refresh()` 重建页面（滚动位置会自动恢复），让整页可用性立即变化；
+  - 标签统一写「总开关未开」或「需要 Root / Shizuku 模式」（看具体原因）。
 - **不要**再往模块配置（Provider）里加"总开关"——targetSdk 30+ 的应用读不到模块 Provider。
 
 ### 2. 需要 hook 读取的数据，必须落在目标应用自己的目录

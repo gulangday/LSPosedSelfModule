@@ -43,11 +43,14 @@ class AppSettingsScreen(
                     if (ok) ("已" + (if (checked) "启用" else "关闭") + "，重启目标应用生效")
                     else "写入失败，检查 Root / Shizuku 授权"
                 )
+                // 总开关影响整页可用性，刷新一次（自动恢复滚动位置）
+                if (ok) host.refresh()
                 ok
             } else {
                 cfg.put("popupEnabled", checked)
                 repo.saveConfig(pkg, cfg)
                 host.toast("已保存（非 Root 模式，仅对 targetSdk < 30 的应用生效）")
+                host.refresh()
                 true
             }
         }
@@ -66,6 +69,22 @@ class AppSettingsScreen(
                 addView(ui.label("非 Root 模式：只对 targetSdk < 30 的应用生效", 11, Palette.muted, false))
             }
         })
+
+        // 「启用提示通知」是总开关：没开启时本页其余选项一律置灰
+        if (!popupOn) {
+            listOf(
+                "弹窗文字" to "底部提示的文字内容",
+                "显示时长" to "提示停留的时间",
+                "淡出时长" to "提示淡出动画的时间",
+                "预览弹窗" to "按当前输入预览一次",
+                "保存设置" to "保存当前配置"
+            ).forEach { (title, subtitle) ->
+                into.addView(ui.lockedCard(title, subtitle, tag = "总开关未开"))
+            }
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            into.addView(ui.actionCard("移除目标应用", "从主页移除，并关闭它的开关") { confirmRemove() })
+            return
+        }
 
         val textEdit = EditText(ui.activity).apply {
             hint = "弹窗文字"
