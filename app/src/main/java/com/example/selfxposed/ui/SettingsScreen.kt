@@ -13,6 +13,12 @@ class SettingsScreen(private val host: ScreenHost) {
     fun render(into: LinearLayout) {
         into.addView(ui.sectionTitle("设置"))
         into.addView(ui.entryRow("工作模式", WorkMode.label(WorkMode.get(ui.activity))) { pickWorkMode() })
+        into.addView(ui.hint(
+            "Root 模式和 Shizuku 模式能做的事一样，一般用 Shizuku 就够。\n" +
+                "如果一定要用 Root 模式，需要满足其中一个条件：\n" +
+                "· 关闭隐藏 root 的模块（如 Shamiko / DenyList）\n" +
+                "· 或让 Shizuku 以 root 运行后，从这里直接切到 Root 模式"
+        ))
         into.addView(ui.entryRow("权限", "后台常驻、自启动") { host.openPermissions() })
         into.addView(ui.entryRow("实时日志", "查看目标应用的运行记录") { pickLogs() })
         into.addView(ui.entryRow("关于", "版本、包名与项目地址") { host.openAbout() })
