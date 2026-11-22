@@ -28,3 +28,14 @@
   - [ ] 新增 hook 点是否有判重？
   - [ ] 多进程应用是否需要限制到主进程？
 - **关联**：E8
+
+## E10 · 想自动勾选 LSPosed 作用域
+
+- **现象**：希望在模块内添加应用后，LSPosed 作用域自动勾选。
+- **根因**：没有普通应用可用的公开 API。libxposed 的 `XposedService.requestScope()` 需要现代模块；本机实测 legacy API 82 加 `libxposed:service:101` 不会绑定；只加 `module.prop` 会让 LSPosed 报 `failed to load module`；service 101 还要求 compileSdk 36，并把 Kotlin stdlib 拉到 2.2.10 与项目 Kotlin 2.0.21 冲突。
+- **正确做法**：不要为自动勾选改 LSPosed 数据库或引入 libxposed service；添加应用后检查 `files/selfxposed_seen` + 作用域数据库，弹「未勾选 / 已勾选待注入 / 无法确认」，并提供「打开 LSPosed」。若将来完整迁移到现代 API 101，再单独评估。
+- **自查项**：
+  - [ ] 是否引入了 `libxposed:service` / `module.prop` / `java_init.list`？
+  - [ ] 是否直接写 LSPosed 数据库？
+  - [ ] 失败时是否回退到手动引导？
+- **关联**：D8、H9、G5

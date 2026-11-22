@@ -5,6 +5,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import com.example.selfxposed.Features
+import com.example.selfxposed.LsposedScope
 import com.example.selfxposed.TargetFiles
 import com.example.selfxposed.WorkMode
 import java.util.Locale
@@ -19,7 +20,9 @@ class HomeScreen(private val host: ScreenHost) {
         val label: String,
         val installed: Boolean,
         var enabled: Boolean,
-        val version: String?
+        val version: String?,
+        val seenAt: Long,
+        val scope: Boolean?
     )
 
     fun render(into: LinearLayout) {
@@ -39,7 +42,9 @@ class HomeScreen(private val host: ScreenHost) {
                 installed = repo.isInstalled(pkg),
                 // 首帧只用缓存，避免冷启动等 Shizuku 绑定；后台会补读并刷新
                 enabled = canRootHome && TargetFiles.peek(pkg)?.isOn(Features.MASTER) == true,
-                version = repo.versionName(pkg)
+                version = repo.versionName(pkg),
+                seenAt = if (canRootHome) TargetFiles.peek(pkg)?.seenAt ?: 0L else 0L,
+                scope = if (canRootHome) LsposedScope.cached(pkg) else null
             )
         }.sortedWith(
             compareByDescending<Entry> { it.installed }
@@ -61,6 +66,8 @@ class HomeScreen(private val host: ScreenHost) {
         // 后台补读功能开关状态：首帧先用缓存，读到与当前显示不一致时再刷新（避免无限刷新）
         if (canRootHome) {
             val rendered = entries.associate { it.pkg to it.enabled }
+            val renderedSeen = entries.associate { it.pkg to (it.seenAt > 0L) }
+            val renderedScope = entries.associate { it.pkg to it.scope }
             Thread {
                 var changed = false
                 entries.forEach { entry ->
@@ -69,7 +76,13 @@ class HomeScreen(private val host: ScreenHost) {
                     } catch (_: Throwable) {
                         null
                     } ?: return@forEach
-                    if (fresh.isOn(Features.MASTER) != rendered[entry.pkg]) changed = true
+                    val scope = LsposedScope.isInScope(ui.activity, entry.pkg, force = true)
+                    if (fresh.isOn(Features.MASTER) != rendered[entry.pkg] ||
+                        (fresh.seenAt > 0L) != renderedSeen[entry.pkg] ||
+                        scope != renderedScope[entry.pkg]
+                    ) {
+                        changed = true
+                    }
                 }
                 if (changed) ui.activity.runOnUiThread { host.refresh() }
             }.start()
@@ -142,6 +155,26 @@ class HomeScreen(private val host: ScreenHost) {
         )
         details.addView(ui.label("版本：${entry.version ?: "未安装"}", 10, Palette.muted, false))
 
+        val injectionText = when {
+            !entry.enabled -> "注入：模块未启用"
+            entry.scope == false -> "注入：作用域未勾选"
+            entry.seenAt > 0L && entry.scope == true -> "注入：已检测"
+            entry.seenAt > 0L -> "注入：已检测（作用域未确认）"
+            else -> "注入：待检测 · 点此检查"
+        }
+        val injectionColor = when {
+            !entry.enabled -> Palette.muted
+            entry.scope == false -> Palette.danger
+            entry.seenAt > 0L -> Palette.success
+            else -> Palette.warning
+        }
+        details.addView(ui.label(injectionText, 10, injectionColor, false).apply {
+            setPadding(0, ui.dp(2), 0, 0)
+            isClickable = true
+            isFocusable = false
+            setOnClickListener { checkInjection(entry) }
+        })
+
         left.addView(details, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(left, LinearLayout.LayoutParams(0, -1, 1f))
 
@@ -178,8 +211,66 @@ class HomeScreen(private val host: ScreenHost) {
         return card
     }
 
-    private fun toggle(entry: Entry, checked: Boolean): Boolean {
+    private fun checkInjection(entry: Entry) {
         if (!WorkMode.canUseRoot(ui.activity)) {
+            host.toast("需要 Root / Shizuku 模式才能检查 LSPosed 作用域")
+            return
+        }
+        if (!entry.enabled) {
+            ui.dialog(
+                title = "模块未启用",
+                message = "先在本页把「${entry.label}」的模块开关打开，再检查 LSPosed 作用域。",
+                confirmText = "知道了",
+                cancelText = null
+            )
+            return
+        }
+        Thread {
+            val seenAt = try {
+                TargetFiles.load(entry.pkg, force = true).seenAt
+            } catch (_: Throwable) {
+                0L
+            }
+            LsposedScope.invalidate(entry.pkg)
+            val inScope = LsposedScope.isInScope(ui.activity, entry.pkg, force = true)
+            ui.activity.runOnUiThread {
+                if (ui.activity.isFinishing || ui.activity.isDestroyed) return@runOnUiThread
+                if (seenAt > 0L && inScope != false) {
+                    host.toast("已检测到「${entry.label}」的注入")
+                    return@runOnUiThread
+                }
+                when (inScope) {
+                    false -> ui.dialog(
+                        title = "LSPosed 作用域未勾选",
+                        message = "「${entry.label}」不在 LSPosed 作用域里，模块不会被注入。\n\n" +
+                            "打开 LSPosed，勾选这个应用，然后启动一次目标应用。",
+                        confirmText = "打开 LSPosed",
+                        cancelText = "稍后",
+                        onConfirm = { host.openLsposed() }
+                    )
+
+                    true -> ui.dialog(
+                        title = "已勾选，等待注入",
+                        message = "LSPosed 作用域已经包含「${entry.label}」，但还没有收到注入标记。\n\n" +
+                            "启动一次目标应用后即可检测；如果已启动仍然提示，请重启目标应用。",
+                        confirmText = "知道了",
+                        cancelText = null
+                    )
+
+                    null -> ui.dialog(
+                        title = "请确认 LSPosed 作用域",
+                        message = "暂时无法读取 LSPosed 的作用域配置。\n\n" +
+                            "请确认已勾选「${entry.label}」，并启动一次目标应用。",
+                        confirmText = "打开 LSPosed",
+                        cancelText = "知道了",
+                        onConfirm = { host.openLsposed() }
+                    )
+                }
+            }
+        }.start()
+    }
+
+    private fun toggle(entry: Entry, checked: Boolean): Boolean {        if (!WorkMode.canUseRoot(ui.activity)) {
             host.toast("需要 Root / Shizuku 模式")
             return false
         }

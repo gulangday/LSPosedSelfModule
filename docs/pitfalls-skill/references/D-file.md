@@ -28,3 +28,15 @@
   - [ ] 是否合并成一条命令？
   - [ ] 首帧是否用了缓存？
 - **关联**：C6、F2
+
+## D8 · 读取 LSPosed 作用域总为空
+
+- **现象**：作用域查询始终返回 null，界面全部显示「作用域未确认」。
+- **根因**：`/data/adb/lspd/config/modules_config.db` 是 WAL 数据库；root 复制出的文件归 root 所有、权限 600，模块 App 读不到；只读打开 WAL 副本可能失败；SQL 列名已带别名时又拼一次 `m.` / `s.`，实际变成 `m.m.module_pkg_name`。
+- **正确做法**：复制 `modules_config.db`、`-wal`、`-shm` 三件套；用 `stat -c %u:%g` 取模块缓存目录的 owner，把三个文件 `chown` 过去后 `chmod 600`；用 `SQLiteDatabase.OPEN_READWRITE` 打开缓存副本；表结构用 `scope(module_pkg_name, app_pkg_name, user_id)` + `modules(module_pkg_name, apk_path)`；SQL 中列名变量不要再带表别名前缀。失败返回 null，不能当成「未勾选」。
+- **自查项**：
+  - [ ] 是否复制了 wal / shm？
+  - [ ] 复制后是否 chown 给模块 App？
+  - [ ] 是否用读写模式打开？
+  - [ ] SQL 是否出现 `m.m.` / `s.s.`？
+- **关联**：D5、E10、H8

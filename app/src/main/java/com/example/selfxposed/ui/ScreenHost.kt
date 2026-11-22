@@ -47,6 +47,7 @@ interface ScreenHost {
     fun backFromLogs()
     fun openHelp()
     fun openPicker()
+    fun openLsposed()
 
     /** 用当前页面内容重新渲染（不播放入场动画）。 */
     fun refresh()

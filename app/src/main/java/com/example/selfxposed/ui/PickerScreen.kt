@@ -5,6 +5,8 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.widget.EditText
 import android.widget.LinearLayout
+import com.example.selfxposed.LsposedScope
+import com.example.selfxposed.TargetFiles
 import com.example.selfxposed.data.AppEntry
 import java.util.Locale
 
@@ -60,8 +62,9 @@ class PickerScreen(private val host: ScreenHost) {
                     repo.addTarget(entry.pkg)
                     repo.log(entry.pkg, "已添加为目标应用")
                     remaining.remove(entry)
-                    host.toast("已添加 ${entry.label}，记得在 LSPosed 作用域中勾选")
+                    host.toast("已添加 ${entry.label}")
                     renderList()
+                    checkScope(entry)
                 })
             }
             if (filtered.size > visible) {
@@ -82,6 +85,57 @@ class PickerScreen(private val host: ScreenHost) {
         })
 
         renderList()
+    }
+
+    /** 添加后检查 LSPosed 作用域和注入标记，给出明确提示。 */
+    private fun checkScope(entry: AppEntry) {
+        Thread {
+            val seenAt = try {
+                TargetFiles.load(entry.pkg, force = true).seenAt
+            } catch (_: Throwable) {
+                0L
+            }
+            val inScope = LsposedScope.isInScope(ui.activity, entry.pkg)
+            ui.activity.runOnUiThread {
+                if (ui.activity.isFinishing || ui.activity.isDestroyed) return@runOnUiThread
+                showScopeHint(entry, seenAt, inScope)
+            }
+        }.start()
+    }
+
+    private fun showScopeHint(entry: AppEntry, seenAt: Long, inScope: Boolean?) {
+        if (seenAt > 0L && inScope != false) {
+            host.toast("已检测到「${entry.label}」的注入")
+            return
+        }
+        when (inScope) {
+            false -> ui.dialog(
+                title = "LSPosed 作用域未勾选",
+                message = "「${entry.label}」还没有在 LSPosed 作用域中勾选，模块不会被注入。\n\n" +
+                    "请打开 LSPosed，勾选这个应用，然后启动一次目标应用。",
+                confirmText = "打开 LSPosed",
+                cancelText = "稍后",
+                onConfirm = { host.openLsposed() }
+            )
+
+            true -> ui.dialog(
+                title = "已勾选，等待注入",
+                message = "LSPosed 作用域已经包含「${entry.label}」，但还没有收到注入标记。\n\n" +
+                    "启动一次目标应用后即可检测；如果已启动仍然提示，请重启目标应用。",
+                confirmText = "知道了",
+                cancelText = null
+            )
+
+            null -> ui.dialog(
+                title = "请确认 LSPosed 作用域",
+                message = "暂时无法读取 LSPosed 的作用域配置。\n\n" +
+                    "请确认已勾选「${entry.label}」，并启动一次目标应用；" +
+                    "如果没有勾选，模块不会生效。",
+                confirmText = "打开 LSPosed",
+                cancelText = "知道了",
+                onConfirm = { host.openLsposed() }
+            )
+        }
     }
 
     private fun appRow(entry: AppEntry, onClick: () -> Unit): LinearLayout {

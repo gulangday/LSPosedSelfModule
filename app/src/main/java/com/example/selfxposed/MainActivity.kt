@@ -806,6 +806,20 @@ class MainActivity : Activity(), ScreenHost {
 
     override fun openPicker() = renderPage(PAGE_PICKER, animate = true)
 
+    override fun openLsposed() {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage("org.lsposed.manager")
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } else {
+                toast("未找到 LSPosed 管理器")
+            }
+        } catch (_: Throwable) {
+            toast("无法打开 LSPosed 管理器")
+        }
+    }
+
     override fun refresh() {
         // 记住滚动位置，刷新后恢复，避免每次操作都跳回顶部
         val scrollY = scroll.scrollY

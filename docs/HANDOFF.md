@@ -44,6 +44,61 @@
 
 ---
 
+## 2026-11-22 · 注入状态改为以当前作用域为准
+
+### 目标
+用户取消电影猎手的作用域后，主页仍显示「注入：已检测」。原因是只看了历史 `selfxposed_seen` 标记。
+
+### 改动
+| 文件 | 改了什么 |
+|---|---|
+| `LsposedScope.kt` | `isInScope` 增加 `force`；新增 `cached` 与 `invalidate` |
+| `ui/HomeScreen.kt` | 状态按作用域优先：未勾选显示「作用域未勾选」；后台刷新时强制查一次作用域；点击状态强制重查 |
+
+### 关键设计
+- 作用域为 `false` 时即使有旧注入标记，也显示「作用域未勾选」。
+- 作用域为 `true` 且 `seenAt > 0` 才显示「已检测」。
+- 作用域查询失败时显示「已检测（作用域未确认）」或「待检测」，不误报。
+- 修复 SQL 拼接：列名已带别名时不再重复拼 `m.` / `s.`，否则查询永远报错返回 null。
+- 修复复制文件权限：复制后 `chown` 给模块 App 并设 600；用读写模式打开缓存副本，让 WAL 能正常恢复。
+
+### 验证
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 编译 | `assembleDebug` | ✅ BUILD SUCCESSFUL（versionCode 13 / 2.2.0-beta3） |
+| 装机 | `adb install -r` | ⚠️ 未执行：新 APK 已生成 |
+
+---
+
+## 2026-11-22 · 添加应用时提示 LSPosed 作用域状态
+
+### 目标
+模块里添加应用后，如果 LSPosed 作用域没勾选，用户没有任何提示，容易误以为模块已经生效。
+
+### 改动
+| 文件 | 改了什么 |
+|---|---|
+| `TargetFiles.kt` | 合并读取增加 `@@E` 段，读取目标应用 `files/selfxposed_seen`，新增 `seenAt` |
+| `LsposedScope.kt`（新增） | Root/Shizuku 复制 `modules_config.db`（含 wal/shm）到缓存，只读查询 `scope` 表，返回 true/false/null |
+| `ui/PickerScreen.kt` | 添加应用后后台检查作用域与注入标记，按结果弹「未勾选 / 已勾选待注入 / 无法确认」 |
+| `ui/HomeScreen.kt` | 卡片增加「注入：已检测 / 待检测 / 模块未启用」，点击重新检查并弹提示 |
+| `MainActivity.kt`、`ui/ScreenHost.kt` | 新增 `openLsposed()`，跳转 LSPosed 管理器 |
+
+### 关键设计
+- 数据库结构已在设备上确认：`scope(module_pkg_name, app_pkg_name, user_id)`、`modules(module_pkg_name, apk_path)`。
+- 查询失败（无 Root、数据库结构变化、复制/打开失败）返回 null，UI 只提示「无法确认」，不误报「未勾选」。
+- 有注入标记但作用域查询为 false 时，以「未勾选」提示（旧标记不当作当前有效）。
+- 结果缓存 10 秒，避免每个卡片都重复复制数据库。
+
+### 验证
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 编译 | `assembleDebug` | ✅ BUILD SUCCESSFUL（versionCode 13 / 2.2.0-beta3） |
+| 数据库结构 | Shizuku 只读读取建表 SQL | ✅ `scope`/`modules` 字段与查询匹配 |
+| 装机 | `adb install -r` | ⚠️ 未执行：新 APK 已生成，待安装 |
+
+---
+
 ## 2026-11-22 · 净化「隐藏」预览按保存规则显示
 
 ### 目标

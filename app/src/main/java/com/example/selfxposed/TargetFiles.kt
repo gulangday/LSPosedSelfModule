@@ -26,7 +26,9 @@ object TargetFiles {
         /** 翻译：用户自己加的词条（英文小写=中文） */
         val translateUser: Map<String, String> = emptyMap(),
         /** 翻译选项：带危险符号的字符串是否跳过（默认 true） */
-        val translateSkipSymbols: Boolean = true
+        val translateSkipSymbols: Boolean = true,
+        /** 目标应用最近一次被注入的时间（0 = 从未检测到） */
+        val seenAt: Long = 0L
     ) {
         fun isOn(feature: String): Boolean = features[feature] == true
     }
@@ -63,6 +65,7 @@ object TargetFiles {
                 append("echo '@@F'; cat \$D/files/selfxposed_features.conf 2>/dev/null; echo; ")
                 append("echo '@@M'; cat \$D/files/selfxposed_pick_mode.conf 2>/dev/null; echo; ")
                 append("echo '@@B'; test -f \$D/files/selfxposed_ball_off && echo 1 || echo 0; ")
+                append("echo '@@E'; cat \$D/files/selfxposed_seen 2>/dev/null; echo; ")
                 append("echo '@@U'; cat \$D/files/selfxposed_update_block.conf 2>/dev/null; echo; ")
                 append("echo '@@A'; cat \$D/files/selfxposed_ad_sdk.conf 2>/dev/null; echo; ")
                 append("echo '@@W'; cat \$D/files/selfxposed_ad_urls.conf 2>/dev/null; echo; ")
@@ -93,6 +96,7 @@ object TargetFiles {
                 line == "@@F" -> current = "F"
                 line == "@@M" -> current = "M"
                 line == "@@B" -> current = "B"
+                line == "@@E" -> current = "E"
                 line == "@@U" -> current = "U"
                 line == "@@A" -> current = "A"
                 line == "@@W" -> current = "W"
@@ -117,6 +121,7 @@ object TargetFiles {
 
         val pickMode = sections["M"]?.toString().orEmpty().trim().ifBlank { "ball" }
         val ballOff = sections["B"]?.toString().orEmpty().trim() == "1"
+        val seenAt = sections["E"]?.toString().orEmpty().trim().toLongOrNull() ?: 0L
 
         // 版本伪装配置：enabled=1 / fakeName=9.9.9 / fakeCode=999999
         val updateConf = sections["U"]?.toString().orEmpty().lines()
@@ -157,7 +162,8 @@ object TargetFiles {
             features, pickMode, ballOff, ruleMode, ruleTitles, fakeName, fakeCode, adSdkLines, adUrlLines,
             purifyRules = purifyRules,
             translateUser = TranslateDict.parse(sections["T"]?.toString().orEmpty()),
-            translateSkipSymbols = TranslateDict.parseOptions(sections["S"]?.toString().orEmpty())
+            translateSkipSymbols = TranslateDict.parseOptions(sections["S"]?.toString().orEmpty()),
+            seenAt = seenAt
         )
     }
 }

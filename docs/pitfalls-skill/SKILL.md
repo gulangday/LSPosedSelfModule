@@ -1,6 +1,6 @@
 ---
 name: pitfalls
-description: 本项目（LSPosed 自模块 selfxposed）踩坑速查索引。出现 UI 裁切、开关状态不对、返回键回错页、提示重复、Shizuku 崩溃、remote 进程堆积、命令卡 2 秒、root 探测失败、配置丢失、值读成 1@@M、写完文件 hook 读不到、hook 不生效或重复、弹窗闪烁、悬浮球点不到、截图重复、冷启动慢、卡顿 ANR、编译 JDK 报错、装机失败、改了没生效、功能默认开启、三层开关、自启动、Toast 拦截范围等问题时，先查本文件索引，命中 key 后只读 references 对应小节；索引未命中必须停下询问用户，禁止编造规则。新增规则读 references/_UPDATE.md。
+description: 本项目（LSPosed 自模块 selfxposed）踩坑速查索引。出现 UI 裁切、开关状态不对、返回键回错页、提示重复、Shizuku 崩溃、remote 进程堆积、命令卡 2 秒、root 探测失败、配置丢失、值读成 1@@M、写完文件 hook 读不到、hook 不生效或重复、弹窗闪烁、悬浮球点不到、截图重复、冷启动慢、卡顿 ANR、编译 JDK 报错、装机失败、改了没生效、功能默认开启、三层开关、自启动、Toast 拦截范围、LSPosed 作用域不对、取消作用域仍显示已注入、读不到作用域数据库、净化预览与保存不一致、删除规则闪动等问题时，先查本文件索引，命中 key 后只读 references 对应小节；索引未命中必须停下询问用户，禁止编造规则。新增规则读 references/_UPDATE.md。
 ---
 
 # 用法（硬协议）
@@ -37,11 +37,13 @@ B9 功能页计数与主页不一致 → 统一 master && feature
 
 B4 返回键回错页面 → 按钮复用 handleBack
 B8 切换开关后滚动跳顶 → 局部更新或恢复 scrollY
+B10 删除净化规则整页闪动 → 单卡动画 + 原地更新标题
 
 ### B 提示与交互
 
 B6 提示条弹两次 → 自绘提示只 show 一次
 B7 提示样式不统一 → 统一 host.toast()
+B11 净化隐藏预览与保存不一致 → 预览复用保存规则 + 同套黑屏保护
 
 ### C Shizuku 服务
 
@@ -68,12 +70,14 @@ D4 30 秒内全显示未开启 → 只缓存带 @@F 的结果
 D5 写完文件 hook 读不到 → chown + chmod 660
 D6 hook 读的配置读不到 → 改写目标应用本地文件
 D7 页面慢要 4~5 秒 → 合并一条命令 + TTL 缓存
+D8 读 LSPosed 作用域总为空 → WAL 三件套 + chown + 读写打开 + SQL 别名
 
 ### E Hook 安装与开关
 
 E1 版本伪装无效 → 提前到 handleLoadPackage
 E2 显示已开启但 hook 不执行 → master && feature 双判
 E7 hook 重复安装 → 包名 + 进程名一次性标记
+E10 想自动勾选 LSPosed 作用域 → 不可行，改手动引导 + 状态检测
 
 ### E Hook 窗口与视觉
 
@@ -113,6 +117,8 @@ H4 Toast 拦截拦不到系统 Toast → 写进限制说明
 H5 自启动被当成必须 → 改"建议开启（非必需）"
 H6 三层开关漏一层 → master → feature → 选项
 H7 删除类操作无确认 → 二次确认弹窗
+H8 取消作用域后仍显示已注入 → 先查 scope DB，再看 seen
+H9 添加应用后不提示作用域 → 添加后查 scope/seen 并弹提示
 
 # 未命中回复模板
 
