@@ -11,16 +11,29 @@ import java.io.File
  */
 object Keywords {
     private const val FILE_NAME = "selfxposed_keywords.conf"
+    private const val CACHE_TTL_MS = 2_000L
 
-    fun load(context: Context): List<String> = try {
-        val file = File(context.filesDir, FILE_NAME)
-        if (!file.exists()) {
+    private data class Entry(val at: Long, val keywords: List<String>)
+
+    @Volatile
+    private var cache: Entry? = null
+
+    /** 关键字缓存（2 秒）：Toast 守卫和弹窗评估都会频繁调用，不能每次都读盘。 */
+    fun load(context: Context): List<String> {
+        val now = System.currentTimeMillis()
+        cache?.let { if (now - it.at < CACHE_TTL_MS) return it.keywords }
+        val keywords = try {
+            val file = File(context.filesDir, FILE_NAME)
+            if (!file.exists()) {
+                emptyList()
+            } else {
+                file.readLines().map { it.trim() }.filter { it.isNotEmpty() }
+            }
+        } catch (_: Throwable) {
             emptyList()
-        } else {
-            file.readLines().map { it.trim() }.filter { it.isNotEmpty() }
         }
-    } catch (_: Throwable) {
-        emptyList()
+        cache = Entry(now, keywords)
+        return keywords
     }
 
     fun read(pkg: String): List<String> = try {

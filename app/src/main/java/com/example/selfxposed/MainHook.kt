@@ -43,12 +43,19 @@ class MainHook : IXposedHookLoadPackage {
         logFramework("自用模块: 拦截悬浮球已添加（$pkg）")
     }
 
-    /** 拦截方式：ball = 悬浮球点选；auto = 弹窗出现时自动询问。 */
-    private fun loadPickMode(context: android.content.Context): String = try {
-        val file = java.io.File(context.filesDir, PICK_MODE_FILE)
-        if (!file.exists()) PICK_MODE_BALL else file.readText().trim().ifBlank { PICK_MODE_BALL }
-    } catch (_: Throwable) {
-        PICK_MODE_BALL
+    /** 拦截方式：ball = 悬浮球点选；auto = 弹窗出现时自动询问。2 秒缓存，一次弹窗评估会问多次。 */
+    private fun loadPickMode(context: android.content.Context): String {
+        val now = System.currentTimeMillis()
+        pickModeCache?.let { if (now - pickModeCacheAt < PICK_MODE_TTL) return it }
+        val mode = try {
+            val file = java.io.File(context.filesDir, PICK_MODE_FILE)
+            if (!file.exists()) PICK_MODE_BALL else file.readText().trim().ifBlank { PICK_MODE_BALL }
+        } catch (_: Throwable) {
+            PICK_MODE_BALL
+        }
+        pickModeCache = mode
+        pickModeCacheAt = now
+        return mode
     }
 
     /** 把球挂到弹窗自己的窗口上，保证它在弹窗之上（可点）；同时隐藏 Activity 上的球。 */
@@ -2857,12 +2864,24 @@ class MainHook : IXposedHookLoadPackage {
                             val context = dialog.context ?: return
                             if (!Features.isOn(context, Features.MASTER)) return
                             if (!Features.isOn(context, Features.BLOCK)) return
-                            val mode = loadBlockRules(context).mode
-                            if (mode == "allow") return
+                            val rules = loadBlockRules(context)
+                            if (rules.mode == "allow") return
+                            // 没有规则、没有关键字、也不是自动询问模式时，扫整棵弹窗树没有意义：
+                            // 只需要挂上点选入口，并把显示前藏起来的弹窗恢复可见。
+                            val quick = rules.titles.isEmpty() &&
+                                Keywords.load(context).isEmpty() &&
+                                (rules.mode.isEmpty() || rules.mode == "titles") &&
+                                loadPickMode(context) != PICK_MODE_AUTO
                             // show() 之后布局才完成，延迟一点再读标题、截图、再决定是否拦截。
                             dialog.window?.decorView?.postDelayed({
                                 try {
-                                    evaluateShownDialog(pkg, dialog)
+                                    if (quick) {
+                                        attachLongPress(dialog, pkg)
+                                        attachBallToDialog(dialog, pkg)
+                                        restoreForNonBlocked(dialog)
+                                    } else {
+                                        evaluateShownDialog(pkg, dialog)
+                                    }
                                 } catch (_: Throwable) {
                                 }
                             }, 150)
@@ -3514,6 +3533,14 @@ class MainHook : IXposedHookLoadPackage {
 
         @Volatile
         private var adLogOnCacheAt = 0L
+
+        /** 拦截方式（ball / auto）缓存：一次弹窗评估会问多次。 */
+        @Volatile
+        private var pickModeCache: String? = null
+
+        @Volatile
+        private var pickModeCacheAt = 0L
+        private const val PICK_MODE_TTL = 2_000L
         private const val AD_FLAG_TTL = 1_000L
 
         /** 弹窗规则的存储位置（写在目标应用自己身上，避免跨进程限制）。 */

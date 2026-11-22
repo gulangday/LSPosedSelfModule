@@ -32,8 +32,16 @@ class PickerScreen(private val host: ScreenHost) {
         val listContainer = LinearLayout(ui.activity).apply { orientation = LinearLayout.VERTICAL }
         into.addView(listContainer)
 
-        val remaining = repo.launchableApps().filter { entry ->
-            entry.pkg !in repo.targets()
+        val apps = repo.launchableAppsCached()
+        if (apps == null) {
+            // 扫全部已安装应用在主线程会明显卡顿，放后台加载完再刷新页面
+            listContainer.addView(ui.hint("正在读取已安装应用…"))
+            repo.preloadLaunchableApps { host.refresh() }
+            return
+        }
+        val targets = repo.targets()
+        val remaining = apps.filter { entry ->
+            entry.pkg !in targets
         }.toMutableList()
 
         var visible = PAGE_SIZE

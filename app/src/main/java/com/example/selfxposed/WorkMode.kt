@@ -17,7 +17,23 @@ object WorkMode {
 
     private fun fileOf(context: Context) = File(context.filesDir, FILE_NAME)
 
-    fun get(context: Context): String? = try {
+    private const val CACHE_TTL_MS = 5_000L
+
+    private data class Snapshot(val at: Long, val mode: String?)
+
+    @Volatile
+    private var snapshot: Snapshot? = null
+
+    /** 工作模式 5 秒缓存：界面渲染里多处调用，不能每次都读盘解析。 */
+    fun get(context: Context): String? {
+        val now = System.currentTimeMillis()
+        snapshot?.let { if (now - it.at < CACHE_TTL_MS) return it.mode }
+        val mode = read(context)
+        snapshot = Snapshot(now, mode)
+        return mode
+    }
+
+    private fun read(context: Context): String? = try {
         val file = fileOf(context)
         if (!file.exists()) {
             null
@@ -40,6 +56,7 @@ object WorkMode {
             file.writeText("$KEY=$mode\n")
             file.setReadable(true, true)
             file.setWritable(true, true)
+            snapshot = Snapshot(System.currentTimeMillis(), mode)
         } catch (_: Throwable) {
         }
     }

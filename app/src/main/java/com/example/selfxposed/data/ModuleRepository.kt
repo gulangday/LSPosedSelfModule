@@ -71,35 +71,48 @@ class ModuleRepository(private val activity: Activity) {
         ConfigClient.removeTarget(resolver, pkg)
     }
 
-    fun isInstalled(pkg: String): Boolean = try {
-        pm.getPackageInfo(pkg, 0)
-        true
-    } catch (_: Throwable) {
-        false
+    /** 包信息聚合：一次 PackageManager 查询同时拿到名称、版本、图标，避免每张卡查 4 次。 */
+    private data class AppInfo(
+        val label: String,
+        val version: String?,
+        val installed: Boolean,
+        val icon: Drawable?
+    )
+
+    private val infoCache = object : android.util.LruCache<String, AppInfo>(64) {}
+
+    private fun info(pkg: String): AppInfo = infoCache.get(pkg) ?: run {
+        val info = try {
+            val pi = pm.getPackageInfo(pkg, 0)
+            val appInfo = pi.applicationInfo
+            AppInfo(
+                label = appInfo?.loadLabel(pm)?.toString() ?: pkg,
+                version = pi.versionName,
+                installed = true,
+                icon = try {
+                    appInfo?.loadIcon(pm)
+                } catch (_: Throwable) {
+                    null
+                }
+            )
+        } catch (_: Throwable) {
+            AppInfo(pkg, null, false, null)
+        }
+        infoCache.put(pkg, info)
+        info
     }
 
-    fun versionName(pkg: String): String? = try {
-        @Suppress("DEPRECATION")
-        pm.getPackageInfo(pkg, 0).versionName
-    } catch (_: Throwable) {
-        null
-    }
+    fun isInstalled(pkg: String): Boolean = info(pkg).installed
 
-    fun label(pkg: String): String = try {
-        @Suppress("DEPRECATION")
-        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
-    } catch (_: Throwable) {
-        pkg
-    }
+    fun versionName(pkg: String): String? = info(pkg).version
 
-    fun icon(pkg: String): Drawable? = try {
-        pm.getApplicationIcon(pkg)
-    } catch (_: Throwable) {
-        null
-    }
+    fun label(pkg: String): String = info(pkg).label
 
-    /** 所有带启动图标的应用（不含自身），按中文排序。 */
+    fun icon(pkg: String): Drawable? = info(pkg).icon
+
+    /** 所有带启动图标的应用（不含自身），按中文排序。列表扫全部应用，走 [preloadLaunchableApps] 在后台加载。 */
     fun launchableApps(): List<AppEntry> {
+        launchable?.let { return it }
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         @Suppress("DEPRECATION")
         val resolved = pm.queryIntentActivities(intent, 0)
@@ -115,8 +128,39 @@ class ModuleRepository(private val activity: Activity) {
             seen[pkg] = AppEntry(pkg, name)
         }
         val collator = Collator.getInstance(Locale.CHINA)
-        return seen.values.sortedWith(compareBy(collator) { it.label })
+        val list = seen.values.sortedWith(compareBy(collator) { it.label })
+        launchable = list
+        return list
     }
+
+    /** 已缓存的启动器列表；还没读过返回 null。 */
+    fun launchableAppsCached(): List<AppEntry>? = launchable
+
+    /** 后台加载启动器列表，完成后在主线程回调，结束后再刷新页面。 */
+    fun preloadLaunchableApps(onReady: () -> Unit) {
+        if (launchable != null) {
+            onReady()
+            return
+        }
+        if (launchableLoading) return
+        launchableLoading = true
+        Thread {
+            try {
+                launchableApps()
+            } catch (_: Throwable) {
+            }
+            launchableLoading = false
+            activity.runOnUiThread {
+                if (!activity.isFinishing && !activity.isDestroyed) onReady()
+            }
+        }.start()
+    }
+
+    @Volatile
+    private var launchable: List<AppEntry>? = null
+
+    @Volatile
+    private var launchableLoading = false
 }
 
 data class AppEntry(val pkg: String, val label: String)

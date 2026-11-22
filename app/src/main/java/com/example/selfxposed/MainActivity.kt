@@ -61,6 +61,9 @@ class MainActivity : Activity(), ScreenHost {
 
     /** 启动读取阶段：此时不要被 onResume 提前渲染主页。 */
     private var booting = true
+
+    /** 上次从后台回到主页时整页重建的时间，用于避免每次切回都重建。 */
+    private var lastHomeRefreshAt = 0L
     private var previousPage = PAGE_HOME
     private var selectedPackage = ""
     private var selectedName = ""
@@ -245,8 +248,13 @@ class MainActivity : Activity(), ScreenHost {
             refresh()
         }
         // 回到主页时刷新一次，让 Hook 连接状态反映最新的握手记录。
+        // 从别的应用切回来就整页重建太费（重建卡片 + 再跑一轮读取），15 秒内只刷一次。
         if (::content.isInitialized && currentPage == PAGE_HOME) {
-            renderPage(PAGE_HOME, animate = false)
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastHomeRefreshAt > 15_000L) {
+                lastHomeRefreshAt = now
+                renderPage(PAGE_HOME, animate = false)
+            }
         }
     }
 
