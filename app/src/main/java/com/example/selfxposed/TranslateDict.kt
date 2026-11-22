@@ -893,6 +893,20 @@ why=为什么
 
     // ---- 翻译核心 ----
 
+    /** 未命中的缓存储存值：译文不会是空串，用哨兵区分「没翻到」和「没查过」。 */
+    private const val MISS = "\u0000"
+
+    private const val TRANSLATE_CACHE_MAX = 512
+
+    /** 原文→译文（或未命中）的有界缓存，按访问顺序淘汰。 */
+    private val translateCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > TRANSLATE_CACHE_MAX
+    }
+
+    /** 缓存对应的词库对象：词库一换就整体作废，避免旧译文串到新词库上。 */
+    private var cacheDict: Map<String, String>? = null
+
     /**
      * 这个字符串要不要跳过（不翻）。
      * 网址、邮箱、版本号、纯数字、没有英文字母的，都不翻——
@@ -905,12 +919,12 @@ why=为什么
         // 卡在 120 会让整段英文原样留着。太长的（日志、协议全文）仍然跳过。
         if (value.length > 400) return true
         if (value.contains("http://") || value.contains("https://") || value.contains("www.")) return true
-        if (EMAIL.containsMatchIn(value)) return true
-        if (VERSION.matches(value)) return true
+        // 一个英文字母都没有（纯中文/纯数字/纯符号）就不用往下跑了
+        if (value.none { it in 'a'..'z' || it in 'A'..'Z' }) return true
         // 带危险符号的整串不碰：格式串、模板串、标记被翻掉会让程序出错
         if (skipSymbols && hasRiskySymbols(value)) return true
-        // 一个英文字母都没有（纯中文/纯数字/纯符号）就不用查了
-        if (value.none { it in 'a'..'z' || it in 'A'..'Z' }) return true
+        if (EMAIL.containsMatchIn(value)) return true
+        if (VERSION.matches(value)) return true
         return false
     }
 
@@ -931,10 +945,25 @@ why=为什么
     ): String? {
         val raw = text.trim()
         if (raw.isEmpty()) return null
-        if (shouldSkip(raw, skipSymbols)) return null
-
-        exactTranslate(raw, dict)?.let { return it }
-        return wordTranslate(raw, dict)
+        // 同一批界面文字会在多轮扫描里反复进来，命中缓存就不用重跑正则和拆词
+        val key = (if (skipSymbols) "1" else "0") + raw
+        synchronized(translateCache) {
+            if (cacheDict !== dict) {
+                translateCache.clear()
+                cacheDict = dict
+            }
+            translateCache[key]?.let { return if (it == MISS) null else it }
+        }
+        val result = if (shouldSkip(raw, skipSymbols)) {
+            null
+        } else {
+            exactTranslate(raw, dict) ?: wordTranslate(raw, dict)
+        }
+        synchronized(translateCache) {
+            // 计算期间词库被换掉就不要写回去，否则会把旧译文挂在新的缓存身份下
+            if (cacheDict === dict) translateCache[key] = result ?: MISS
+        }
+        return result
     }
 
     /**

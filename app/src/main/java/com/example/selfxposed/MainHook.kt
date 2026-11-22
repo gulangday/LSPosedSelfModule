@@ -332,6 +332,9 @@ class MainHook : IXposedHookLoadPackage {
         val hook = object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
                 try {
+                    // 翻译默认关闭，而这个 hook 在进程里每次取字符串都会触发：
+                    // 先用开关缓存早退，别为没开的翻译付反射取 Application 的成本。
+                    if (translateOnCached() == false) return
                     val app = currentApp() ?: return
                     if (!isTranslateOn(app)) return
 
@@ -443,6 +446,12 @@ class MainHook : IXposedHookLoadPackage {
         } catch (_: Throwable) {
         }
         logFramework("自用模块: $message")
+    }
+
+    /** 只读开关缓存：未命中返回 null，由 [isTranslateOn] 读文件后填上。 */
+    private fun translateOnCached(): Boolean? {
+        val cached = translateFlagCache ?: return null
+        return if (System.currentTimeMillis() - translateFlagCacheAt < TRANSLATE_FLAG_TTL) cached else null
     }
 
     /** 翻译开关：命中缓存就用缓存，避免每次取字符串都读文件。 */
@@ -638,7 +647,7 @@ class MainHook : IXposedHookLoadPackage {
                     if (isAdLogOn(app)) {
                         logAdOnce("$pkg-dnslog-$host", "DNS 请求：$host")
                     }
-                    if (!AdUrlBlacklist.matches(app, "http://$host/")) return
+                    if (!AdUrlBlacklist.matchesHost(app, host)) return
                     // getByName 返回单个地址，getAllByName 返回数组；非法结果会直接崩调用方，故按返回类型区分
                     param.result = if (param.method.name == "getByName") {
                         java.net.InetAddress.getByAddress(host, byteArrayOf(0, 0, 0, 0))
@@ -671,9 +680,16 @@ class MainHook : IXposedHookLoadPackage {
         return on
     }
 
-    /** 去广告调试开关：同样归属总开关。 */
-    private fun isAdLogOn(context: android.content.Context): Boolean =
-        Features.isOn(context, Features.MASTER) && Features.isOn(context, Features.AD_LOG)
+    /** 去广告调试开关：同样归属总开关，DNS 回调每次都会问，必须缓存。 */
+    private fun isAdLogOn(context: android.content.Context): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        val cached = adLogOnCache
+        if (cached != null && now - adLogOnCacheAt < AD_FLAG_TTL) return cached
+        val on = Features.isOn(context, Features.MASTER) && Features.isOn(context, Features.AD_LOG)
+        adLogOnCache = on
+        adLogOnCacheAt = now
+        return on
+    }
 
     /** Activity 与 ContextWrapper 的 startActivity 各有多个重载，逐个挂。 */
     private fun installStartActivityHook(target: Class<*>, hook: XC_MethodHook) {
@@ -778,9 +794,18 @@ class MainHook : IXposedHookLoadPackage {
         }
     }
 
+    /** ActivityThread 只需要查找一次，缓存住避免每次取 Application 都做类查找。 */
+    private val activityThreadClass: Class<*>? by lazy {
+        try {
+            Class.forName("android.app.ActivityThread")
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     /** 取当前进程的 Application（Toast 本身拿不到 context）。 */
     private fun currentApp(): android.app.Application? = try {
-        val cls = Class.forName("android.app.ActivityThread")
+        val cls = activityThreadClass ?: return null
         val current = XposedHelpers.callStaticMethod(cls, "currentApplication")
         current as? android.app.Application
     } catch (_: Throwable) {
@@ -930,14 +955,34 @@ class MainHook : IXposedHookLoadPackage {
         }
     }
 
-    /** 规则缓存：2 秒内复用同一次文件读取，避免每次界面变化都读盘。 */
+    /**
+     * 规则缓存：2 秒内复用同一次文件读取；过期后先用规则文件的时间戳/长度判断有没有改过，
+     * 没改只续期不重读。命中数、跳过原因只影响展示，不影响匹配，所以只看规则文件。
+     */
     private fun purifyRules(activity: Activity): List<PurifyRules.Rule> {
         val now = System.currentTimeMillis()
         val cached = purifyCache
-        if (cached != null && now - purifyCacheAt < 2_000L) return cached
+        if (cached != null && now - purifyCacheAt < PURIFY_RULES_TTL) return cached
+        val file = java.io.File(activity.filesDir, PurifyRules.CONF_FILE)
+        val modified = try {
+            file.lastModified()
+        } catch (_: Throwable) {
+            0L
+        }
+        val length = try {
+            file.length()
+        } catch (_: Throwable) {
+            0L
+        }
+        if (cached != null && modified == purifyConfModified && length == purifyConfLength) {
+            purifyCacheAt = now
+            return cached
+        }
         val fresh = PurifyRules.loadLocal(activity)
         purifyCache = fresh
         purifyCacheAt = now
+        purifyConfModified = modified
+        purifyConfLength = length
         return fresh
     }
 
@@ -953,12 +998,30 @@ class MainHook : IXposedHookLoadPackage {
         val decor = activity.window?.decorView as? android.view.ViewGroup ?: return
         val plan = ArrayList<Pair<android.view.View, PurifyRules.Rule>>()
 
+        // 按规则类型预筛：没有对应类型的规则时，就不做资源 ID 查表、取文本这些有成本的事。
+        var needId = false
+        var needText = false
+        var needDesc = false
+        var needClass = false
+        for (rule in rules) {
+            when (rule.type) {
+                PurifyRules.TYPE_ID, PurifyRules.TYPE_ID_CONTAINS -> needId = true
+                PurifyRules.TYPE_TEXT -> needText = true
+                PurifyRules.TYPE_DESC -> needDesc = true
+                PurifyRules.TYPE_CLASS -> needClass = true
+            }
+        }
+
         walkViews(decor, 0) { view ->
             if (isOwnView(view)) return@walkViews
-            val idName = idNameOf(view)
-            val text = (view as? android.widget.TextView)?.text?.toString()?.trim().orEmpty()
-            val desc = view.contentDescription?.toString()?.trim().orEmpty()
-            val className = view.javaClass.name
+            val idName = if (needId) idNameOf(view) else ""
+            val text = if (needText) {
+                (view as? android.widget.TextView)?.text?.toString()?.trim().orEmpty()
+            } else {
+                ""
+            }
+            val desc = if (needDesc) view.contentDescription?.toString()?.trim().orEmpty() else ""
+            val className = if (needClass) view.javaClass.name else ""
             for (rule in rules) {
                 if (PurifyRules.matches(rule, activityName, idName, text, desc, className)) {
                     plan.add(view to rule)
@@ -1005,12 +1068,7 @@ class MainHook : IXposedHookLoadPackage {
         }
 
         if (hits.isNotEmpty()) {
-            try {
-                val current = PurifyRules.loadLocalHits(activity).toMutableMap()
-                hits.forEach { (id, count) -> current[id] = (current[id] ?: 0) + count }
-                PurifyRules.saveLocalHits(activity, current)
-            } catch (_: Throwable) {
-            }
+            recordPurifyHits(activity, hits)
             // 写进模块日志（带「净化」标记），否则净化页的日志永远是空的
             val hostPkg = activity.packageName
             hits.forEach { (id, count) ->
@@ -1037,6 +1095,41 @@ class MainHook : IXposedHookLoadPackage {
         // 把跳过原因同步给模块 UI（节流 + 后台写盘）
         val recovered = effectiveNow - skippedNow.keys
         recordPurifySkipped(activity, skippedNow, recovered)
+    }
+
+    /**
+     * 记录净化命中数。同理 [recordPurifySkipped]：这里跑在 OnPreDraw 回调里，
+     * 直接读文件再写回会卡住帧，先在内存累加，延迟后交给后台线程写一次。
+     */
+    private fun recordPurifyHits(context: android.content.Context, hits: Map<String, Int>) {
+        if (hits.isEmpty()) return
+        try {
+            val appContext = context.applicationContext ?: context
+            synchronized(purifyHitsLock) {
+                val current = purifyHitsCache
+                    ?: PurifyRules.loadLocalHits(appContext).toMutableMap()
+                hits.forEach { (id, count) -> current[id] = (current[id] ?: 0) + count }
+                purifyHitsCache = current
+                if (purifyHitsFlushScheduled) return
+                purifyHitsFlushScheduled = true
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try {
+                    val write = synchronized(purifyHitsLock) {
+                        purifyHitsFlushScheduled = false
+                        HashMap(purifyHitsCache ?: emptyMap())
+                    }
+                    Thread {
+                        try {
+                            PurifyRules.saveLocalHits(appContext, write)
+                        } catch (_: Throwable) {
+                        }
+                    }.start()
+                } catch (_: Throwable) {
+                }
+            }, PURIFY_SKIPPED_FLUSH_MS)
+        } catch (_: Throwable) {
+        }
     }
 
     /**
@@ -1237,13 +1330,18 @@ class MainHook : IXposedHookLoadPackage {
     ) {
         try {
             if (ruleId.isBlank()) return
+            if (ruleId in purifyShotTaken) return
             val dir = java.io.File(context.filesDir, PurifyRules.SHOT_DIR).apply { mkdirs() }
             val file = java.io.File(dir, "$ruleId.png")
-            if (file.exists() && file.length() > 0) return
+            if (file.exists() && file.length() > 0) {
+                purifyShotTaken.add(ruleId)
+                return
+            }
 
             val width = view.width
             val height = view.height
             if (width <= 0 || height <= 0) return
+            if (!purifyShotTaken.add(ruleId)) return
 
             // 小图：宽度压到上限以内，省地方也够认出是什么
             val scale = if (width > PURIFY_SHOT_MAX_WIDTH) {
@@ -1260,11 +1358,18 @@ class MainHook : IXposedHookLoadPackage {
             val canvas = android.graphics.Canvas(bitmap)
             canvas.scale(scale, scale)
             view.draw(canvas)
-            java.io.FileOutputStream(file).use { out ->
-                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 80, out)
-            }
-            bitmap.recycle()
-            logFramework("自用模块: 已保存控件小图 $ruleId（${targetWidth}x$targetHeight）")
+            // 位图必须在主线程画，但 PNG 编码和写文件不用：丢到后台线程，不占帧预算
+            Thread {
+                try {
+                    java.io.FileOutputStream(file).use { out ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 80, out)
+                    }
+                    logFramework("自用模块: 已保存控件小图 $ruleId（${targetWidth}x$targetHeight）")
+                } catch (_: Throwable) {
+                } finally {
+                    bitmap.recycle()
+                }
+            }.start()
         } catch (_: Throwable) {
         }
     }
@@ -3402,6 +3507,13 @@ class MainHook : IXposedHookLoadPackage {
 
         @Volatile
         private var adOnCacheAt = 0L
+
+        /** 去广告调试（DNS 日志）开关缓存：DNS 回调每次网络请求都会触发。 */
+        @Volatile
+        private var adLogOnCache: Boolean? = null
+
+        @Volatile
+        private var adLogOnCacheAt = 0L
         private const val AD_FLAG_TTL = 1_000L
 
         /** 弹窗规则的存储位置（写在目标应用自己身上，避免跨进程限制）。 */
@@ -3454,6 +3566,15 @@ class MainHook : IXposedHookLoadPackage {
         @Volatile
         private var purifyCacheAt = 0L
 
+        /** 上一次读取规则时的规则文件时间戳/长度，用于跳过没变化的重复读取。 */
+        @Volatile
+        private var purifyConfModified = Long.MIN_VALUE
+
+        @Volatile
+        private var purifyConfLength = Long.MIN_VALUE
+
+        private const val PURIFY_RULES_TTL = 2_000L
+
         /** 已经装过净化监听的界面（弱引用，界面销毁后自动清掉），避免重复安装。 */
         private val purifyInstalled: MutableSet<Activity> =
             java.util.Collections.newSetFromMap(java.util.WeakHashMap<Activity, Boolean>())
@@ -3473,6 +3594,14 @@ class MainHook : IXposedHookLoadPackage {
         private val purifySkippedLock = Any()
         private var purifySkippedCache: MutableMap<String, String>? = null
         private var purifySkippedFlushScheduled = false
+
+        /** 命中数：同样在内存累加后节流写盘，避免在帧回调里读写文件。 */
+        private val purifyHitsLock = Any()
+        private var purifyHitsCache: MutableMap<String, Int>? = null
+        private var purifyHitsFlushScheduled = false
+
+        /** 已经拍过小图的规则（文件名就是规则 id），避免每轮都做文件存在性检查。 */
+        private val purifyShotTaken = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         /** 跳过原因合并写盘的延迟：太短会频繁写盘，太长则模块里看到得晚。 */
         private const val PURIFY_SKIPPED_FLUSH_MS = 1_200L

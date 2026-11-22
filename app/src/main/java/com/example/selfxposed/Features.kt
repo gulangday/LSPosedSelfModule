@@ -31,6 +31,21 @@ object Features {
 
     private fun fileOf(context: Context) = File(context.filesDir, FILE)
 
+    private const val CACHE_TTL_MS = 1_500L
+
+    private data class Snapshot(
+        val at: Long,
+        val modified: Long,
+        val length: Long,
+        val values: Map<String, Boolean>
+    )
+
+    /**
+     * 按文件路径缓存解析结果：hook 在目标进程读目标应用自己的目录，模块界面读自己的目录，
+     * 同一个进程里的两条路径各存一份，互不干扰。
+     */
+    private val snapshots = java.util.concurrent.ConcurrentHashMap<String, Snapshot>()
+
     private fun parse(text: String): Map<String, Boolean> = text.lines()
         .mapNotNull { line ->
             val index = line.indexOf('=')
@@ -39,11 +54,41 @@ object Features {
         .filter { it.first.isNotEmpty() }
         .associate { it.first to (it.second == "1") }
 
+    /**
+     * 读配置：TTL 内直接用内存结果；过期后先用文件时间戳/长度确认有没有改过，
+     * 没改也只刷新时间戳，不重新读盘解析。hook 收不到模块 UI 的写入通知，只能靠这层判断。
+     */
+    private fun load(file: File): Map<String, Boolean> {
+        val now = System.currentTimeMillis()
+        val modified = file.lastModified()
+        val length = file.length()
+        val cached = snapshots[file.path]
+        if (cached != null && cached.modified == modified && cached.length == length) {
+            snapshots[file.path] = cached.copy(at = now)
+            return cached.values
+        }
+        val values = try {
+            if (file.exists()) parse(file.readText()) else emptyMap()
+        } catch (_: Throwable) {
+            emptyMap()
+        }
+        snapshots[file.path] = Snapshot(now, modified, length, values)
+        return values
+    }
+
     fun isOn(context: Context, feature: String): Boolean = try {
         val file = fileOf(context)
-        if (!file.exists()) false else parse(file.readText())[feature] == true
+        snapshots[file.path]?.let { cached ->
+            if (System.currentTimeMillis() - cached.at < CACHE_TTL_MS) return cached.values[feature] == true
+        }
+        load(file)[feature] == true
     } catch (_: Throwable) {
         false
+    }
+
+    /** 本进程刚写过配置时调用，让下一次读取重新读盘。 */
+    fun invalidate() {
+        snapshots.clear()
     }
 
     fun readRemote(pkg: String): Map<String, Boolean> = try {
@@ -64,6 +109,7 @@ object Features {
                 "chmod 660 /data/data/" + pkg + "/files/" + FILE + "; echo ok"
         )
         val ok = out.contains("ok")
+        if (ok) invalidate()
         ok
     } catch (_: Throwable) {
         false

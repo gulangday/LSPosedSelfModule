@@ -62,10 +62,17 @@ object AdUrlBlacklist {
     fun matches(context: Context, url: String?): Boolean {
         if (url.isNullOrBlank()) return false
         val host = try {
-            java.net.URI(url).host?.lowercase() ?: return false
+            java.net.URI(url).host
         } catch (_: Throwable) {
-            return false
+            null
         }
-        return load(context).any { host == it || host.endsWith(".$it") }
+        return matchesHost(context, host)
+    }
+
+    /** 已知域名时的直接匹配：DNS 回调只拿得到域名，不必先拼成 URL 再解析。 */
+    fun matchesHost(context: Context, host: String?): Boolean {
+        if (host.isNullOrBlank()) return false
+        val value = host.lowercase()
+        return load(context).any { value == it || value.endsWith(".$it") }
     }
 }
