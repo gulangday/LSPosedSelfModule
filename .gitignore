@@ -20,6 +20,9 @@ local.properties
 # Local verification screenshots
 /shots/
 
+# AI 工具平台缓存
+.platform/
+
 # OS noise
 .DS_Store
 Thumbs.db
