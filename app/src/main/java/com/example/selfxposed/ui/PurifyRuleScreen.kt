@@ -31,7 +31,12 @@ class PurifyRuleScreen(
             return
         }
 
-        val state = TargetFiles.load(pkg)
+        val state = TargetFiles.peek(pkg)
+        if (state == null) {
+            into.addView(ui.hint("正在读取规则…"))
+            TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            return
+        }
         val rule = state.purifyRules.firstOrNull { it.id == ruleId }
         if (rule == null) {
             into.addView(ui.hint("这条规则已经不在了，可能刚被删除。"))

@@ -37,7 +37,13 @@ class PurifyScreen(
             return
         }
 
-        val state = TargetFiles.load(pkg)
+        // 首帧只读缓存，没读到就让后台去读，不在主线程等 root 命令
+        val state = TargetFiles.peek(pkg)
+        if (state == null) {
+            into.addView(ui.hint("正在读取目标应用状态…"))
+            TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            return
+        }
         if (!state.isOn(Features.MASTER)) {
             into.addView(ui.card(Palette.hero).apply {
                 elevation = 0f
@@ -56,10 +62,8 @@ class PurifyScreen(
 
         // ---- 功能总开关（三层里的第二层）----
         val chip = ui.statusChip(state.isOn(Features.PURIFY)) { checked ->
-            val ok = Features.setRemote(pkg, Features.PURIFY, checked)
-            TargetFiles.invalidate(pkg)
-            host.toast(if (ok) "已保存，重启目标应用生效" else "写入失败，检查 Root / Shizuku 授权")
-            ok
+            host.setFeatureAsync(pkg, Features.PURIFY, checked)
+            true
         }
         into.addView(ui.card().apply {
             val row = LinearLayout(ui.activity).apply {
@@ -82,16 +86,28 @@ class PurifyScreen(
         val ballPath = "/data/data/$pkg/files/selfxposed_ball_off"
         val ballChip = ui.statusChip(!state.ballOff) { checked ->
             val command = if (checked) "rm -f $ballPath; echo ok" else "touch $ballPath; echo ok"
-            val out = com.example.selfxposed.RootShell.exec(command)
-            com.example.selfxposed.TargetFiles.invalidate(pkg)
-            host.toast(
-                when {
-                    !out.contains("ok") -> "操作失败，检查 Root / Shizuku 授权"
-                    checked -> "悬浮球已开启，重启目标应用后显示"
-                    else -> "悬浮球已关闭"
+            // 写入放后台，界面先按目标状态切换，失败再刷新回真实状态
+            Thread {
+                val out = try {
+                    com.example.selfxposed.RootShell.exec(command)
+                } catch (_: Throwable) {
+                    ""
                 }
-            )
-            out.contains("ok")
+                val ok = out.contains("ok")
+                com.example.selfxposed.TargetFiles.invalidate(pkg)
+                ui.activity.runOnUiThread {
+                    if (ui.activity.isFinishing || ui.activity.isDestroyed) return@runOnUiThread
+                    host.toast(
+                        when {
+                            !ok -> "操作失败，检查 Root / Shizuku 授权"
+                            checked -> "悬浮球已开启，重启目标应用后显示"
+                            else -> "悬浮球已关闭"
+                        }
+                    )
+                    if (!ok) host.refresh()
+                }
+            }.start()
+            true
         }
         into.addView(ui.card().apply {
             val row = LinearLayout(ui.activity).apply {

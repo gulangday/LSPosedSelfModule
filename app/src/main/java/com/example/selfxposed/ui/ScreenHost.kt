@@ -55,3 +55,30 @@ interface ScreenHost {
     fun versionName(): String
     fun versionCode(): Int
 }
+
+/**
+ * 功能开关的异步写入：界面先按目标状态切换（调用方返回 true），
+ * root 写入放后台线程，失败时刷新页面回到真实状态。
+ */
+internal fun ScreenHost.setFeatureAsync(
+    pkg: String,
+    feature: String,
+    checked: Boolean,
+    successMessage: String = "已保存，重启目标应用生效",
+    refreshOnSuccess: Boolean = false
+) {
+    val activity = ui.activity
+    Thread {
+        val ok = try {
+            com.example.selfxposed.Features.setRemote(pkg, feature, checked)
+        } catch (_: Throwable) {
+            false
+        }
+        com.example.selfxposed.TargetFiles.invalidate(pkg)
+        activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            toast(if (ok) successMessage else "写入失败，检查 Root / Shizuku 授权")
+            if (!ok || refreshOnSuccess) refresh()
+        }
+    }.start()
+}

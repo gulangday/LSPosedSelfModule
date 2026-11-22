@@ -27,7 +27,14 @@ class AdBlockScreen(
         into.addView(ui.label(pkg, 12, Palette.muted, false).apply { setPadding(ui.dp(2), 0, 0, 0) })
 
         val canRoot = WorkMode.canUseRoot(ui.activity)
-        val state = if (canRoot) TargetFiles.load(pkg) else TargetFiles.TargetState()
+        // 首帧只读缓存，没读到就让后台去读，不在主线程等 root 命令
+        val cached = if (canRoot) TargetFiles.peek(pkg) else null
+        if (canRoot && cached == null) {
+            into.addView(ui.hint("正在读取目标应用状态…"))
+            TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            return
+        }
+        val state = cached ?: TargetFiles.TargetState()
         val masterOn = canRoot && state.isOn(Features.MASTER)
 
         if (!masterOn) {
@@ -45,10 +52,8 @@ class AdBlockScreen(
         }
 
         val adChip = ui.statusChip(state.isOn(Features.AD)) { checked ->
-            val ok = Features.setRemote(pkg, Features.AD, checked)
-            TargetFiles.invalidate(pkg)
-            host.toast(if (ok) "已保存，重启目标应用生效" else "写入失败，检查 Root / Shizuku 授权")
-            ok
+            host.setFeatureAsync(pkg, Features.AD, checked)
+            true
         }
         into.addView(ui.card().apply {
             val row = LinearLayout(ui.activity).apply {
@@ -70,10 +75,8 @@ class AdBlockScreen(
 
         // 调试：记录 DNS 请求域名，方便找出广告域名
         val logChip = ui.statusChip(state.isOn(Features.AD_LOG)) { checked ->
-            val ok = Features.setRemote(pkg, Features.AD_LOG, checked)
-            TargetFiles.invalidate(pkg)
-            host.toast(if (ok) "已保存，重启目标应用生效" else "写入失败，检查 Root / Shizuku 授权")
-            ok
+            host.setFeatureAsync(pkg, Features.AD_LOG, checked)
+            true
         }
         into.addView(ui.card().apply {
             val row = LinearLayout(ui.activity).apply {

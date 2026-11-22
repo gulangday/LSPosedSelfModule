@@ -28,6 +28,11 @@ class DialogRulesScreen(
         val timeText: String
     )
 
+    private companion object {
+        /** 拦截记录缓存：读图走 root，慢，放后台读一次；点「刷新」时清空。 */
+        private val shotCache = java.util.concurrent.ConcurrentHashMap<String, List<ShotRecord>>()
+    }
+
     fun render(into: LinearLayout) {
         into.addView(ui.backRow("‹  返回") { host.backFromRules() })
         into.addView(ui.sectionTitle(if (onlyPackage != null) "弹窗规则 · ${repo.label(onlyPackage)}" else "弹窗规则"))
@@ -92,6 +97,7 @@ class DialogRulesScreen(
 
         // 与「刷新」同级：整页操作
         into.addView(ui.actionCard("刷新", "重新读取规则") {
+            shotCache.clear()
             ShizukuBridge.bind(android.content.ComponentName(ui.activity, com.example.selfxposed.RemoteService::class.java))
             host.refresh()
         })
@@ -104,6 +110,7 @@ class DialogRulesScreen(
                 onConfirm = {
                     var ok = true
                     targets.forEach { pkg -> if (!DialogRules.clear(pkg)) ok = false }
+                    shotCache.clear()
                     if (ok) {
                         host.toast("已清除")
                         host.refresh()
@@ -118,7 +125,24 @@ class DialogRulesScreen(
     /** 拦截记录：每条 = 缩略图 + 标题 + 时间，点击看大图。 */
     private fun addRecords(card: LinearLayout, pkg: String) {
         card.addView(ui.label("拦截记录", 12, Palette.muted, true))
-        val records = loadRecords(pkg)
+        val records = shotCache[pkg]
+        if (records == null) {
+            // 读截图要跑 root 命令并解码位图，不能在渲染线程等
+            card.addView(ui.label("正在读取拦截记录…", 11, Palette.muted, false))
+            Thread {
+                val loaded = try {
+                    loadRecords(pkg)
+                } catch (_: Throwable) {
+                    emptyList()
+                }
+                shotCache[pkg] = loaded
+                ui.activity.runOnUiThread {
+                    if (ui.activity.isFinishing || ui.activity.isDestroyed) return@runOnUiThread
+                    host.refresh()
+                }
+            }.start()
+            return
+        }
         if (records.isEmpty()) {
             card.addView(ui.label("还没有记录（拦截弹窗后自动保存）", 11, Palette.muted, false).apply {
                 setPadding(0, ui.dp(4), 0, 0)

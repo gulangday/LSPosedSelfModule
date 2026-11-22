@@ -100,22 +100,14 @@ class MainActivity : Activity(), ScreenHost {
 
         buildShell()
 
-        // 先显示"正在读取"，等 Shizuku 绑定 + 状态读完再渲染主页，
-        // 避免先出现"未开启"再跳变（慢一点但显示正确、不闪）。
+        // 先显示"正在读取"，等 Shizuku 绑定好再渲染主页，避免先出现"未开启"再跳变。
+        // 目标应用的状态不在这里预读：进主页后由主页后台批量读一次，避免启动时扫两遍。
         showLoadingPlaceholder()
         Thread {
             try {
                 if (ShizukuBridge.hasPermission()) {
                     ShizukuBridge.bind(android.content.ComponentName(this, RemoteService::class.java))
                     ShizukuBridge.ensureBound(6_000L)
-                }
-                if (WorkMode.canUseRoot(this)) {
-                    repo.targets().forEach { pkg ->
-                        try {
-                            TargetFiles.load(pkg, force = true)
-                        } catch (_: Throwable) {
-                        }
-                    }
                 }
             } catch (_: Throwable) {
             }

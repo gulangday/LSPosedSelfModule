@@ -22,8 +22,15 @@ class UpdateBlockScreen(
     fun render(into: LinearLayout) {
         val cfg = repo.config(pkg)
         val canRoot = WorkMode.canUseRoot(ui.activity)
-        // 一次 shell 读回全部状态（带 30 秒缓存），避免多次 IPC 卡顿
-        val state = if (canRoot) com.example.selfxposed.TargetFiles.load(pkg) else com.example.selfxposed.TargetFiles.TargetState()
+        // 首帧只读缓存，没读到就让后台去读，不在主线程等 root 命令
+        val cached = if (canRoot) com.example.selfxposed.TargetFiles.peek(pkg) else null
+        if (canRoot && cached == null) {
+            into.addView(ui.backRow("‹  功能") { host.openFeatures() })
+            into.addView(ui.hint("正在读取目标应用状态…"))
+            com.example.selfxposed.TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            return
+        }
+        val state = cached ?: com.example.selfxposed.TargetFiles.TargetState()
         val masterOn = canRoot && state.isOn(com.example.selfxposed.Features.MASTER)
         val blockOn = masterOn && state.isOn(com.example.selfxposed.Features.BLOCK)
 
@@ -78,15 +85,15 @@ class UpdateBlockScreen(
                 host.toast("需要 Root / Shizuku 模式")
                 false
             } else {
-                val ok = com.example.selfxposed.Features.setRemote(pkg, com.example.selfxposed.Features.BLOCK, checked)
-                com.example.selfxposed.TargetFiles.invalidate(pkg)
-                host.toast(
-                    if (ok) ("已" + (if (checked) "启用" else "关闭") + "，重启目标应用生效")
-                    else "写入失败，检查 Root / Shizuku 授权"
+                // 总开关会影响整页可用性，成功后刷新一次（会自动恢复滚动位置）
+                host.setFeatureAsync(
+                    pkg,
+                    com.example.selfxposed.Features.BLOCK,
+                    checked,
+                    successMessage = "已" + (if (checked) "启用" else "关闭") + "，重启目标应用生效",
+                    refreshOnSuccess = true
                 )
-                // 总开关变化会影响整页可用性，刷新一次（会自动恢复滚动位置）
-                if (ok) host.refresh()
-                ok
+                true
             }
         }
         into.addView(ui.card().apply {
@@ -127,10 +134,8 @@ class UpdateBlockScreen(
                 host.toast("需要 Root / Shizuku 模式")
                 false
             } else {
-                val ok = com.example.selfxposed.Features.setRemote(pkg, com.example.selfxposed.Features.TOAST, checked)
-                com.example.selfxposed.TargetFiles.invalidate(pkg)
-                host.toast(if (ok) "已保存，重启目标应用生效" else "写入失败，检查 Root / Shizuku 授权")
-                ok
+                host.setFeatureAsync(pkg, com.example.selfxposed.Features.TOAST, checked)
+                true
             }
         }
         into.addView(ui.card().apply {

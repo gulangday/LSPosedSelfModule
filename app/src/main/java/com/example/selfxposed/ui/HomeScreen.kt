@@ -60,31 +60,38 @@ class HomeScreen(private val host: ScreenHost) {
                 })
             })
         } else {
-            entries.forEach { into.addView(appCard(it)) }
+            entries.forEach { into.addView(appCard(it, canRootHome)) }
         }
 
-        // 后台补读功能开关状态：首帧先用缓存，读到与当前显示不一致时再刷新（避免无限刷新）
-        if (canRootHome) {
+        // 后台补读状态：整轮只跑一条批量 shell + 一次作用域批量查询，
+        // 逐包读取会把 root 调用放大成 N 倍。只在与当前显示不一致时刷新。
+        if (canRootHome && entries.isNotEmpty()) {
             val rendered = entries.associate { it.pkg to it.enabled }
             val renderedSeen = entries.associate { it.pkg to (it.seenAt > 0L) }
             val renderedScope = entries.associate { it.pkg to it.scope }
+            val pkgs = entries.map { it.pkg }
             Thread {
-                var changed = false
-                entries.forEach { entry ->
-                    val fresh = try {
-                        TargetFiles.load(entry.pkg, force = true)
-                    } catch (_: Throwable) {
-                        null
-                    } ?: return@forEach
-                    val scope = LsposedScope.isInScope(ui.activity, entry.pkg, force = true)
-                    if (fresh.isOn(Features.MASTER) != rendered[entry.pkg] ||
-                        (fresh.seenAt > 0L) != renderedSeen[entry.pkg] ||
-                        scope != renderedScope[entry.pkg]
-                    ) {
-                        changed = true
+                val states = try {
+                    TargetFiles.loadAll(pkgs, force = true)
+                } catch (_: Throwable) {
+                    emptyMap()
+                }
+                val scopes = try {
+                    LsposedScope.isInScopeBatch(ui.activity, pkgs, force = true)
+                } catch (_: Throwable) {
+                    null
+                }
+                val changed = pkgs.any { pkg ->
+                    val fresh = states[pkg] ?: return@any false
+                    fresh.isOn(Features.MASTER) != rendered[pkg] ||
+                        (fresh.seenAt > 0L) != renderedSeen[pkg] ||
+                        (scopes != null && scopes[pkg] != renderedScope[pkg])
+                }
+                if (changed) {
+                    ui.activity.runOnUiThread {
+                        if (!ui.activity.isFinishing && !ui.activity.isDestroyed) host.refresh()
                     }
                 }
-                if (changed) ui.activity.runOnUiThread { host.refresh() }
             }.start()
         }
     }
@@ -98,7 +105,7 @@ class HomeScreen(private val host: ScreenHost) {
         addView(ui.label("先在 LSPosed 中启用模块并勾选目标作用域，再启动一次目标应用完成 Hook 检测。", 12, Palette.muted, false))
     }
 
-    private fun appCard(entry: Entry): View {
+    private fun appCard(entry: Entry, canRoot: Boolean): View {
         val card = ui.card(if (entry.installed) Palette.surface else Palette.surfaceMuted)
         if (!entry.installed) card.alpha = 0.72f
 
@@ -182,7 +189,6 @@ class HomeScreen(private val host: ScreenHost) {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        val canRoot = WorkMode.canUseRoot(ui.activity)
         val on = entry.enabled
         val statusChip = ui.chip(
             if (on) "模块已启用" else "未启用",
@@ -192,23 +198,38 @@ class HomeScreen(private val host: ScreenHost) {
             isClickable = true
         }
         statusChip.setOnClickListener {
-            val target = !entry.enabled
-            val ok = toggle(entry, target)
-            if (ok) {
-                // 只更新这两个标签，不重建整页
-                entry.enabled = target
-                statusChip.text = if (target) "模块已启用" else "未启用"
-                statusChip.setTextColor(if (target) Palette.success else Palette.muted)
-                statusChip.background = ui.rounded(
-                    if (target) Palette.successSoft else Palette.surfaceMuted, 10
-                )
+            if (!canRoot) {
+                host.toast("需要 Root / Shizuku 模式")
+                return@setOnClickListener
             }
+            val target = !entry.enabled
+            // 先按目标状态更新界面，root 写入放后台，失败再回滚并提示
+            applyChip(statusChip, target)
+            Thread {
+                val ok = setEnabled(entry, target)
+                ui.activity.runOnUiThread {
+                    if (ui.activity.isFinishing || ui.activity.isDestroyed) return@runOnUiThread
+                    if (ok) {
+                        entry.enabled = target
+                        host.toast(if (target) "模块已启用，重启目标应用生效" else "模块已停用")
+                    } else {
+                        applyChip(statusChip, !target)
+                        host.toast("写入失败，检查 Root / Shizuku 授权")
+                    }
+                }
+            }.start()
         }
         right.addView(statusChip)
         row.addView(right, LinearLayout.LayoutParams(ui.dp(76), -1))
 
         card.addView(row)
         return card
+    }
+
+    private fun applyChip(chip: android.widget.TextView, on: Boolean) {
+        chip.text = if (on) "模块已启用" else "未启用"
+        chip.setTextColor(if (on) Palette.success else Palette.muted)
+        chip.background = ui.rounded(if (on) Palette.successSoft else Palette.surfaceMuted, 10)
     }
 
     private fun checkInjection(entry: Entry) {
@@ -270,18 +291,11 @@ class HomeScreen(private val host: ScreenHost) {
         }.start()
     }
 
-    private fun toggle(entry: Entry, checked: Boolean): Boolean {        if (!WorkMode.canUseRoot(ui.activity)) {
-            host.toast("需要 Root / Shizuku 模式")
-            return false
-        }
-        // 主页开关 = 该应用的模块总开关，关闭时所有功能都不工作
+    /** 主页开关 = 该应用的模块总开关，关闭时所有功能都不工作。调用方在后台线程执行。 */
+    private fun setEnabled(entry: Entry, checked: Boolean): Boolean {
         val ok = Features.setRemote(entry.pkg, Features.MASTER, checked)
         TargetFiles.invalidate(entry.pkg)
         repo.log(entry.pkg, if (checked) "模块已启用" else "模块已停用")
-        host.toast(
-            if (ok) (if (checked) "模块已启用，重启目标应用生效" else "模块已停用")
-            else "写入失败，检查 Root / Shizuku 授权"
-        )
         return ok
     }
 

@@ -29,12 +29,51 @@ object LsposedScope {
             }
         }
         val result = try {
-            query(context, pkg)
+            val db = openCopy(context) ?: return null
+            try {
+                scopePackages(db)?.contains(pkg)
+            } finally {
+                closeAndDelete(db, context)
+            }
         } catch (_: Throwable) {
             null
         }
         android.util.Log.i(TAG, "pkg=$pkg inScope=$result")
         cache[pkg] = Entry(now, result)
+        return result
+    }
+
+    /**
+     * 批量查询：整轮只复制一次数据库、只跑一条 SQL，避免逐包复制整个 db。
+     * 表结构不认识时返回 null，调用方回退到逐包查询。
+     */
+    fun isInScopeBatch(context: Context, pkgs: List<String>, force: Boolean = false): Map<String, Boolean>? {
+        if (pkgs.isEmpty()) return emptyMap()
+        val now = System.currentTimeMillis()
+        if (!force) {
+            val allCached = pkgs.all { pkg -> cache[pkg]?.let { now - it.at < CACHE_TTL_MS } == true }
+            if (allCached) {
+                return pkgs.associateWith { cache[it]?.result == true }
+            }
+        }
+        val result = try {
+            val db = openCopy(context) ?: return null
+            try {
+                val inScope = scopePackages(db) ?: return null
+                val map = HashMap<String, Boolean>()
+                pkgs.forEach { pkg ->
+                    val value = pkg in inScope
+                    cache[pkg] = Entry(now, value)
+                    map[pkg] = value
+                }
+                map
+            } finally {
+                closeAndDelete(db, context)
+            }
+        } catch (_: Throwable) {
+            null
+        }
+        if (result != null) android.util.Log.i(TAG, "batch=${pkgs.size} inScope=${result.count { it.value }}")
         return result
     }
 
@@ -48,72 +87,91 @@ object LsposedScope {
         cache.remove(pkg)
     }
 
-    private fun query(context: Context, pkg: String): Boolean? {
-        val dir = File(context.cacheDir, "lsposed_scope").apply { mkdirs() }
+    private fun copyDir(context: Context) = File(context.cacheDir, "lsposed_scope")
+
+    private fun copyFiles(context: Context): List<File> {
+        val dir = copyDir(context).apply { mkdirs() }
         val dbFile = File(dir, DB_NAME)
-        val walFile = File(dir, "$DB_NAME-wal")
-        val shmFile = File(dir, "$DB_NAME-shm")
-        listOf(dbFile, walFile, shmFile).forEach { it.delete() }
+        return listOf(dbFile, File(dir, "$DB_NAME-wal"), File(dir, "$DB_NAME-shm"))
+    }
+
+    /** 把模块数据库连同 wal/shm 复制到缓存目录并打开只读副本；失败返回 null。 */
+    private fun openCopy(context: Context): SQLiteDatabase? {
+        val files = copyFiles(context).also { list -> list.forEach { it.delete() } }
+        val dbFile = files[0]
 
         val command = buildString {
-            append("OWNER=\$(stat -c %u:%g '").append(dir.absolutePath).append("'); ")
+            append("OWNER=\$(stat -c %u:%g '").append(copyDir(context).absolutePath).append("'); ")
             append("cp -f ").append(DB_DIR).append("/").append(DB_NAME)
-            append(" '").append(dbFile.absolutePath).append("' 2>/dev/null; ")
+            append(" '").append(files[0].absolutePath).append("' 2>/dev/null; ")
             append("cp -f ").append(DB_DIR).append("/").append(DB_NAME).append("-wal")
-            append(" '").append(walFile.absolutePath).append("' 2>/dev/null; ")
+            append(" '").append(files[1].absolutePath).append("' 2>/dev/null; ")
             append("cp -f ").append(DB_DIR).append("/").append(DB_NAME).append("-shm")
-            append(" '").append(shmFile.absolutePath).append("' 2>/dev/null; ")
-            append("chown \$OWNER '").append(dbFile.absolutePath).append("' ")
-            append("'").append(walFile.absolutePath).append("' ")
-            append("'").append(shmFile.absolutePath).append("' 2>/dev/null; ")
-            append("chmod 600 '").append(dbFile.absolutePath).append("' ")
-            append("'").append(walFile.absolutePath).append("' ")
-            append("'").append(shmFile.absolutePath).append("' 2>/dev/null; echo ok")
+            append(" '").append(files[2].absolutePath).append("' 2>/dev/null; ")
+            append("chown \$OWNER '").append(files[0].absolutePath).append("' ")
+            append("'").append(files[1].absolutePath).append("' ")
+            append("'").append(files[2].absolutePath).append("' 2>/dev/null; ")
+            append("chmod 600 '").append(files[0].absolutePath).append("' ")
+            append("'").append(files[1].absolutePath).append("' ")
+            append("'").append(files[2].absolutePath).append("' 2>/dev/null; echo ok")
         }
         val out = RootShell.exec(command, 8_000L)
         if (!out.contains("ok") || !dbFile.exists()) {
-            android.util.Log.w(TAG, "copy failed pkg=$pkg out=${out.take(120)}")
-            listOf(dbFile, walFile, shmFile).forEach { it.delete() }
+            android.util.Log.w(TAG, "copy failed out=${out.take(120)}")
+            files.forEach { it.delete() }
             return null
         }
 
-        val db = try {
+        return try {
+            // 读写模式打开：WAL 恢复需要能写缓存副本
             SQLiteDatabase.openDatabase(dbFile.path, null, SQLiteDatabase.OPEN_READWRITE)
         } catch (t: Throwable) {
-            android.util.Log.w(TAG, "open failed pkg=$pkg: ${t.javaClass.simpleName}: ${t.message}")
-            listOf(dbFile, walFile, shmFile).forEach { it.delete() }
+            android.util.Log.w(TAG, "open failed: ${t.javaClass.simpleName}: ${t.message}")
+            files.forEach { it.delete() }
+            null
+        }
+    }
+
+    private fun closeAndDelete(db: SQLiteDatabase, context: Context) {
+        try {
+            db.close()
+        } catch (_: Throwable) {
+        }
+        copyFiles(context).forEach { it.delete() }
+    }
+
+    /** 本模块在 LSPosed 里勾选的全部包名；表结构不认识时返回 null。 */
+    private fun scopePackages(db: SQLiteDatabase): Set<String>? {
+        val scopeColumns = columns(db, "scope")
+        val modulesColumns = columns(db, "modules")
+        if (scopeColumns.isEmpty() || modulesColumns.isEmpty()) {
+            android.util.Log.w(TAG, "missing tables scope=$scopeColumns modules=$modulesColumns")
             return null
         }
-        return try {
-            val scopeColumns = columns(db, "scope")
-            val modulesColumns = columns(db, "modules")
-            if (scopeColumns.isEmpty() || modulesColumns.isEmpty()) {
-                android.util.Log.w(TAG, "missing tables scope=$scopeColumns modules=$modulesColumns")
-                return null
-            }
 
-            val moduleColumn = if ("module_pkg_name" in modulesColumns) "module_pkg_name"
-            else if ("mid" in modulesColumns) "mid"
-            else return null
-            val scopeModuleColumn = if ("module_pkg_name" in scopeColumns) "module_pkg_name"
-            else if ("mid" in scopeColumns) "mid"
-            else return null
+        val moduleColumn = if ("module_pkg_name" in modulesColumns) "module_pkg_name"
+        else if ("mid" in modulesColumns) "mid"
+        else return null
+        val scopeModuleColumn = if ("module_pkg_name" in scopeColumns) "module_pkg_name"
+        else if ("mid" in scopeColumns) "mid"
+        else return null
 
-            val sql = "SELECT 1 FROM scope s JOIN modules m ON m.$moduleColumn = s.$scopeModuleColumn " +
-                "WHERE m.$moduleColumn = ? AND s.app_pkg_name = ? LIMIT 1"
-            db.rawQuery(sql, arrayOf(ConfigClient.MODULE_PACKAGE, pkg)).use { cursor ->
-                cursor.moveToFirst()
+        val sql = "SELECT s.app_pkg_name FROM scope s JOIN modules m ON m.$moduleColumn = s.$scopeModuleColumn " +
+            "WHERE m.$moduleColumn = ?"
+        val out = HashSet<String>()
+        try {
+            db.rawQuery(sql, arrayOf(ConfigClient.MODULE_PACKAGE)).use { cursor ->
+                val index = cursor.getColumnIndex("app_pkg_name")
+                if (index < 0) return null
+                while (cursor.moveToNext()) {
+                    cursor.getString(index)?.let { out.add(it) }
+                }
             }
         } catch (t: Throwable) {
-            android.util.Log.w(TAG, "query failed pkg=$pkg: ${t.javaClass.simpleName}: ${t.message}")
-            null
-        } finally {
-            try {
-                db.close()
-            } catch (_: Throwable) {
-            }
-            listOf(dbFile, walFile, shmFile).forEach { it.delete() }
+            android.util.Log.w(TAG, "query failed: ${t.javaClass.simpleName}: ${t.message}")
+            return null
         }
+        return out
     }
 
     private fun columns(db: SQLiteDatabase, table: String): Set<String> = try {
