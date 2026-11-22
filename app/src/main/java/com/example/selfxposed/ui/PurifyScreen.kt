@@ -40,8 +40,16 @@ class PurifyScreen(
         // 首帧只读缓存，没读到就让后台去读，不在主线程等 root 命令
         val state = TargetFiles.peek(pkg)
         if (state == null) {
-            into.addView(ui.hint("正在读取目标应用状态…"))
-            TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            if (TargetFiles.failedRecently(pkg)) {
+                into.addView(ui.hint("读取目标应用状态失败，请检查 Root / Shizuku 授权。"))
+                into.addView(ui.actionCard("重试", "重新读取目标应用状态") {
+                    TargetFiles.invalidate(pkg)
+                    host.refresh()
+                })
+            } else {
+                into.addView(ui.hint("正在读取目标应用状态…"))
+                TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            }
             return
         }
         if (!state.isOn(Features.MASTER)) {
@@ -86,7 +94,7 @@ class PurifyScreen(
         val ballPath = "/data/data/$pkg/files/selfxposed_ball_off"
         val ballChip = ui.statusChip(!state.ballOff) { checked ->
             val command = if (checked) "rm -f $ballPath; echo ok" else "touch $ballPath; echo ok"
-            // 写入放后台，界面先按目标状态切换，失败再刷新回真实状态
+            // 先切界面，写入放后台；成功后失效缓存（自增版本），失败刷新回滚
             Thread {
                 val out = try {
                     com.example.selfxposed.RootShell.exec(command)
@@ -94,17 +102,15 @@ class PurifyScreen(
                     ""
                 }
                 val ok = out.contains("ok")
-                com.example.selfxposed.TargetFiles.invalidate(pkg)
                 ui.activity.runOnUiThread {
                     if (ui.activity.isFinishing || ui.activity.isDestroyed) return@runOnUiThread
-                    host.toast(
-                        when {
-                            !ok -> "操作失败，检查 Root / Shizuku 授权"
-                            checked -> "悬浮球已开启，重启目标应用后显示"
-                            else -> "悬浮球已关闭"
-                        }
-                    )
-                    if (!ok) host.refresh()
+                    if (ok) {
+                        com.example.selfxposed.TargetFiles.invalidate(pkg)
+                        host.toast(if (checked) "悬浮球已开启，重启目标应用后显示" else "悬浮球已关闭")
+                    } else {
+                        host.toast("操作失败，检查 Root / Shizuku 授权")
+                        host.refresh()
+                    }
                 }
             }.start()
             true

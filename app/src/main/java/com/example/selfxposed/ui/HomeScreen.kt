@@ -22,7 +22,11 @@ class HomeScreen(private val host: ScreenHost) {
         var enabled: Boolean,
         val version: String?,
         val seenAt: Long,
-        val scope: Boolean?
+        val scope: Boolean?,
+        /** 是否成功读到过状态：没读到时不能显示成「未启用」。 */
+        val known: Boolean,
+        /** 最近一次读取失败（可与 [known] 组合显示「读取失败」）。 */
+        val failed: Boolean
     )
 
     fun render(into: LinearLayout) {
@@ -36,15 +40,18 @@ class HomeScreen(private val host: ScreenHost) {
 
         val canRootHome = WorkMode.canUseRoot(ui.activity)
         val entries = repo.targets().map { pkg ->
+            val peeked = if (canRootHome) TargetFiles.peek(pkg) else null
             Entry(
                 pkg = pkg,
                 label = repo.label(pkg),
                 installed = repo.isInstalled(pkg),
-                // 首帧只用缓存，避免冷启动等 Shizuku 绑定；后台会补读并刷新
-                enabled = canRootHome && TargetFiles.peek(pkg)?.isOn(Features.MASTER) == true,
+                // 首帧只用缓存，避免冷启动等 root 命令；后台会补读并刷新
+                enabled = peeked?.isOn(Features.MASTER) == true,
                 version = repo.versionName(pkg),
-                seenAt = if (canRootHome) TargetFiles.peek(pkg)?.seenAt ?: 0L else 0L,
-                scope = if (canRootHome) LsposedScope.cached(pkg) else null
+                seenAt = peeked?.seenAt ?: 0L,
+                scope = if (canRootHome) LsposedScope.cached(pkg) else null,
+                known = peeked != null,
+                failed = canRootHome && TargetFiles.failedRecently(pkg)
             )
         }.sortedWith(
             compareByDescending<Entry> { it.installed }
@@ -63,29 +70,38 @@ class HomeScreen(private val host: ScreenHost) {
             entries.forEach { into.addView(appCard(it, canRootHome)) }
         }
 
-        // 后台补读状态：整轮只跑一条批量 shell + 一次作用域批量查询，
-        // 逐包读取会把 root 调用放大成 N 倍。只在与当前显示不一致时刷新。
+        // 后台逐包补读状态（回到逐包方式：批量命令在部分 su 上拿不到输出）。
+        // 只在与当前显示不一致时刷新。
         if (canRootHome && entries.isNotEmpty()) {
             val rendered = entries.associate { it.pkg to it.enabled }
+            val renderedKnown = entries.associate { it.pkg to it.known }
             val renderedSeen = entries.associate { it.pkg to (it.seenAt > 0L) }
             val renderedScope = entries.associate { it.pkg to it.scope }
             val pkgs = entries.map { it.pkg }
             Thread {
-                val states = try {
-                    TargetFiles.loadAll(pkgs, force = true)
-                } catch (_: Throwable) {
-                    emptyMap()
+                var changed = false
+                pkgs.forEach { pkg ->
+                    val fresh = try {
+                        TargetFiles.load(pkg, force = true)
+                    } catch (_: Throwable) {
+                        null
+                    } ?: return@forEach
+                    if (TargetFiles.hasState(pkg) != renderedKnown[pkg] ||
+                        fresh.isOn(Features.MASTER) != rendered[pkg] ||
+                        (fresh.seenAt > 0L) != renderedSeen[pkg]
+                    ) {
+                        changed = true
+                    }
                 }
                 val scopes = try {
                     LsposedScope.isInScopeBatch(ui.activity, pkgs, force = true)
                 } catch (_: Throwable) {
                     null
                 }
-                val changed = pkgs.any { pkg ->
-                    val fresh = states[pkg] ?: return@any false
-                    fresh.isOn(Features.MASTER) != rendered[pkg] ||
-                        (fresh.seenAt > 0L) != renderedSeen[pkg] ||
-                        (scopes != null && scopes[pkg] != renderedScope[pkg])
+                if (scopes != null && pkgs.any { scopes[it] != renderedScope[it] }) changed = true
+                val failed = pkgs.filter { !TargetFiles.hasState(it) }
+                if (failed.isNotEmpty()) {
+                    repo.logModule("状态读取失败：${failed.joinToString()}；${TargetFiles.lastDiagnostic()}")
                 }
                 if (changed) {
                     ui.activity.runOnUiThread {
@@ -163,6 +179,9 @@ class HomeScreen(private val host: ScreenHost) {
         details.addView(ui.label("版本：${entry.version ?: "未安装"}", 10, Palette.muted, false))
 
         val injectionText = when {
+            !canRoot -> "注入：需要 Root / Shizuku 模式"
+            !entry.known && entry.failed -> "注入：状态读取失败 · 点此重试"
+            !entry.known -> "注入：状态读取中"
             !entry.enabled -> "注入：模块未启用"
             entry.scope == false -> "注入：作用域未勾选"
             entry.seenAt > 0L && entry.scope == true -> "注入：已检测"
@@ -170,6 +189,8 @@ class HomeScreen(private val host: ScreenHost) {
             else -> "注入：待检测 · 点此检查"
         }
         val injectionColor = when {
+            !canRoot -> Palette.muted
+            !entry.known -> Palette.muted
             !entry.enabled -> Palette.muted
             entry.scope == false -> Palette.danger
             entry.seenAt > 0L -> Palette.success
@@ -190,10 +211,17 @@ class HomeScreen(private val host: ScreenHost) {
             gravity = Gravity.CENTER
         }
         val on = entry.enabled
+        // 状态还没读到时不能显示「未启用」：那是把「不知道」当成了「关闭」
+        val chipOn = entry.known && on
         val statusChip = ui.chip(
-            if (on) "模块已启用" else "未启用",
-            if (on) Palette.success else Palette.muted,
-            if (on) Palette.successSoft else Palette.surfaceMuted
+            when {
+                !entry.known && entry.failed -> "读取失败"
+                !entry.known -> "读取中"
+                on -> "模块已启用"
+                else -> "未启用"
+            },
+            if (chipOn) Palette.success else Palette.muted,
+            if (chipOn) Palette.successSoft else Palette.surfaceMuted
         ).apply {
             isClickable = true
         }
@@ -202,8 +230,15 @@ class HomeScreen(private val host: ScreenHost) {
                 host.toast("需要 Root / Shizuku 模式")
                 return@setOnClickListener
             }
+            if (!entry.known) {
+                // 状态未读到：先重读一次，不拿「未知」去写配置
+                TargetFiles.invalidate(entry.pkg)
+                host.refresh()
+                return@setOnClickListener
+            }
             val target = !entry.enabled
-            // 先按目标状态更新界面，root 写入放后台，失败再回滚并提示
+            // 先切界面（响应即时），写入放后台；成功后 invalidate 会在写入完成后自增版本，
+            // 把写入前开始的旧读取结果全部作废，不会再出现「关掉又变回开启」。
             applyChip(statusChip, target)
             Thread {
                 val ok = setEnabled(entry, target)
@@ -235,6 +270,12 @@ class HomeScreen(private val host: ScreenHost) {
     private fun checkInjection(entry: Entry) {
         if (!WorkMode.canUseRoot(ui.activity)) {
             host.toast("需要 Root / Shizuku 模式才能检查 LSPosed 作用域")
+            return
+        }
+        if (!entry.known) {
+            // 还没读到状态时不拿「未知」当「未启用」去弹错提示
+            TargetFiles.invalidate(entry.pkg)
+            host.refresh()
             return
         }
         if (!entry.enabled) {
@@ -294,7 +335,8 @@ class HomeScreen(private val host: ScreenHost) {
     /** 主页开关 = 该应用的模块总开关，关闭时所有功能都不工作。调用方在后台线程执行。 */
     private fun setEnabled(entry: Entry, checked: Boolean): Boolean {
         val ok = Features.setRemote(entry.pkg, Features.MASTER, checked)
-        TargetFiles.invalidate(entry.pkg)
+        // 写成功后才失效：写入前开始的旧读取会因版本号不同而丢掉结果
+        if (ok) TargetFiles.invalidate(entry.pkg)
         repo.log(entry.pkg, if (checked) "模块已启用" else "模块已停用")
         return ok
     }

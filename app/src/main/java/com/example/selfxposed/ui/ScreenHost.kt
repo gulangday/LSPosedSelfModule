@@ -57,8 +57,8 @@ interface ScreenHost {
 }
 
 /**
- * 功能开关的异步写入：界面先按目标状态切换（调用方返回 true），
- * root 写入放后台线程，失败时刷新页面回到真实状态。
+ * 功能开关的异步写入：界面先按目标状态切换（调用方返回 true），root 写入放后台。
+ * 只有写入成功才 invalidate（自增版本，丢弃写入前的旧读取结果）；失败刷新页面回滚。
  */
 internal fun ScreenHost.setFeatureAsync(
     pkg: String,
@@ -74,11 +74,17 @@ internal fun ScreenHost.setFeatureAsync(
         } catch (_: Throwable) {
             false
         }
-        com.example.selfxposed.TargetFiles.invalidate(pkg)
         activity.runOnUiThread {
             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-            toast(if (ok) successMessage else "写入失败，检查 Root / Shizuku 授权")
-            if (!ok || refreshOnSuccess) refresh()
+            if (ok) {
+                // 写完后才失效：任何在写入前开始的读取都拿不到新版本号，结果会被丢弃
+                com.example.selfxposed.TargetFiles.invalidate(pkg)
+                toast(successMessage)
+                if (refreshOnSuccess) refresh()
+            } else {
+                toast("写入失败，检查 Root / Shizuku 授权")
+                refresh()
+            }
         }
     }.start()
 }

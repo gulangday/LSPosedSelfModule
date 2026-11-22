@@ -30,8 +30,16 @@ class AdBlockScreen(
         // 首帧只读缓存，没读到就让后台去读，不在主线程等 root 命令
         val cached = if (canRoot) TargetFiles.peek(pkg) else null
         if (canRoot && cached == null) {
-            into.addView(ui.hint("正在读取目标应用状态…"))
-            TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            if (TargetFiles.failedRecently(pkg)) {
+                into.addView(ui.hint("读取目标应用状态失败，请检查 Root / Shizuku 授权。"))
+                into.addView(ui.actionCard("重试", "重新读取目标应用状态") {
+                    TargetFiles.invalidate(pkg)
+                    host.refresh()
+                })
+            } else {
+                into.addView(ui.hint("正在读取目标应用状态…"))
+                TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            }
             return
         }
         val state = cached ?: TargetFiles.TargetState()

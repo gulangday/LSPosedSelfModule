@@ -36,12 +36,30 @@ object TargetFiles {
     private const val TTL_MS = 30_000L
     private val cache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, TargetState>>()
 
+    /** 读取失败的时间：只用于短时间内不重复发命令，永远不进 [cache]，否则界面会把「不知道」画成「未启用」。 */
+    private const val FAIL_TTL_MS = 5_000L
+    private val failedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** 每个包的写入代数：写入成功后自增，旧读取结果一律作废，避免把刚改的值盖回旧值。 */
+    private val versions = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     fun invalidate(pkg: String) {
         cache.remove(pkg)
+        failedAt.remove(pkg)
+        versions.merge(pkg, 1, Int::plus)
     }
 
-    /** 只看缓存，不发起命令；用于页面首帧快速渲染。 */
+    /** 只看缓存，不发起命令；用于页面首帧快速渲染。只有成功读到的值才会在这里。 */
     fun peek(pkg: String): TargetState? = cache[pkg]?.second
+
+    /** 是否成功读到过这个包的状态（区分「未启用」和「还没读到」）。 */
+    fun hasState(pkg: String): Boolean = cache.containsKey(pkg)
+
+    /** 最近一次读取是否失败（用于界面提示「读取失败，可重试」）。 */
+    fun failedRecently(pkg: String): Boolean {
+        val at = failedAt[pkg] ?: return false
+        return System.currentTimeMillis() - at < FAIL_TTL_MS
+    }
 
     /** 只读缓存，但超过 maxAgeMs 视为没有（用于主页判断是否需要后台补读）。 */
     fun peekFresh(pkg: String, maxAgeMs: Long): TargetState? {
@@ -49,104 +67,56 @@ object TargetFiles {
         return if (System.currentTimeMillis() - entry.first <= maxAgeMs) entry.second else null
     }
 
+    /** 最近一次单包读取命令的原始输出，仅用于排查读取失败。 */
+    @Volatile
+    private var lastSingleOutput = ""
+
+    fun lastDiagnostic(): String = lastSingleOutput.ifBlank { "空" }
+
     fun load(pkg: String, force: Boolean = false): TargetState {
         val now = System.currentTimeMillis()
         if (!force) {
             cache[pkg]?.let { (at, state) ->
                 if (now - at < TTL_MS) return state
             }
+            if (failedRecently(pkg)) return TargetState()
         }
+        val versionAtStart = versions[pkg] ?: 0
         return try {
             val raw = RootShell.exec("D=/data/data/$pkg; " + stateScript(), 6_000L)
             val parsed = parse(raw)
-            // 只有命令真正跑起来（带回 @@F 标记）才缓存；
-            // Shizuku 未绑定等失败返回空串，不能缓存，否则 30 秒内都显示未开启。
-            if (raw.contains("@@F")) cache[pkg] = now to parsed
+            // 读取期间发生过写入（invalidate 会自增版本），这份结果已经过期，不能写缓存
+            val unchanged = (versions[pkg] ?: 0) == versionAtStart
+            // 只有命令真正跑起来（带回 @@F 标记）才算读到；失败时只记失败时间，
+            // 不写缓存，否则界面会把「没读到」当成「全部未启用」。
+            if (raw.contains("@@F")) {
+                if (unchanged) {
+                    cache[pkg] = now to parsed
+                    failedAt.remove(pkg)
+                }
+            } else if (unchanged) {
+                failedAt[pkg] = now
+                lastSingleOutput = "$pkg: " + raw.take(160)
+            }
             parsed
         } catch (_: Throwable) {
+            if ((versions[pkg] ?: 0) == versionAtStart) failedAt[pkg] = now
             TargetState()
         }
-    }
-
-    /**
-     * 批量读取：一条 shell 命令循环跑完所有包，每段用 `@@PKG <包名>` 分隔。
-     * 逐包 load 会把 root IPC 次数放大成 N 倍，主页刷新一次就要 N 条命令。
-     */
-    fun loadAll(pkgs: List<String>, force: Boolean = false): Map<String, TargetState> {
-        val result = LinkedHashMap<String, TargetState>()
-        if (pkgs.isEmpty()) return result
-        val now = System.currentTimeMillis()
-        val toRead = pkgs.filter { pkg ->
-            val cachedAt = cache[pkg]?.first
-            force || cachedAt == null || now - cachedAt >= TTL_MS
-        }
-        pkgs.forEach { pkg -> cache[pkg]?.let { result[pkg] = it.second } }
-        if (toRead.isEmpty()) return result
-
-        val command = buildString {
-            append("for P in ").append(toRead.joinToString(" ")).append("; do ")
-            append("D=/data/data/\$P; echo \"@@PKG \$P\"; ")
-            append(stateScript())
-            append("done")
-        }
-        val raw = try {
-            RootShell.exec(command, 6_000L)
-        } catch (_: Throwable) {
-            ""
-        }
-        if (raw.contains("@@PKG")) {
-            var current: String? = null
-            val buffer = StringBuilder()
-            fun flush() {
-                val pkg = current ?: return
-                val parsed = parse(buffer.toString())
-                cache[pkg] = now to parsed
-                result[pkg] = parsed
-                buffer.setLength(0)
-            }
-            raw.lines().forEach { line ->
-                if (line.startsWith("@@PKG ")) {
-                    flush()
-                    current = line.removePrefix("@@PKG ").trim()
-                } else {
-                    buffer.append(line).append('\n')
-                }
-            }
-            flush()
-        }
-
-        // 没读到的包（命令失败、Shizuku 未就绪）：留一个短缓存，
-        // 页面才不会停在「读取中」，也不会因为没有缓存反复重试。
-        toRead.forEach { pkg ->
-            if (!result.containsKey(pkg)) {
-                val empty = TargetState()
-                cache[pkg] = (now - (TTL_MS - 5_000L)) to empty
-                result[pkg] = empty
-            }
-        }
-        return result
     }
 
     private val loading = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /**
      * 后台读取并在主线程回调：页面首帧不再同步等 root 命令。
-     * 同一个包同时只跑一次；读失败也留一个短缓存，页面才不会卡在占位或反复重试。
+     * 同一个包同时只跑一次；失败只记失败时间，不进缓存。
      */
     fun loadAsync(activity: android.app.Activity, pkg: String, force: Boolean = false, onDone: () -> Unit = {}) {
         if (!loading.add(pkg)) return
         Thread {
             try {
-                val state = try {
-                    load(pkg, force)
-                } catch (_: Throwable) {
-                    TargetState()
-                }
-                if (cache[pkg] == null) {
-                    // 把时间往前拨，让这个空状态按短 TTL 过期（5 秒）
-                    val shortTtl = 5_000L
-                    cache[pkg] = (System.currentTimeMillis() - (TTL_MS - shortTtl)) to state
-                }
+                load(pkg, force)
+            } catch (_: Throwable) {
             } finally {
                 loading.remove(pkg)
             }

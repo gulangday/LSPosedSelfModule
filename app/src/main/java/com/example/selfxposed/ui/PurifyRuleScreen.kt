@@ -33,8 +33,16 @@ class PurifyRuleScreen(
 
         val state = TargetFiles.peek(pkg)
         if (state == null) {
-            into.addView(ui.hint("正在读取规则…"))
-            TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            if (TargetFiles.failedRecently(pkg)) {
+                into.addView(ui.hint("读取规则失败，请检查 Root / Shizuku 授权。"))
+                into.addView(ui.actionCard("重试", "重新读取规则") {
+                    TargetFiles.invalidate(pkg)
+                    host.refresh()
+                })
+            } else {
+                into.addView(ui.hint("正在读取规则…"))
+                TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            }
             return
         }
         val rule = state.purifyRules.firstOrNull { it.id == ruleId }

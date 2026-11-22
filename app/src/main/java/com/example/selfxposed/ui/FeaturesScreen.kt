@@ -20,6 +20,14 @@ class FeaturesScreen(private val host: ScreenHost) {
         // 有目标还没读回来时先显示「读取中」，不要拿不完整的数据算成「未启用」
         val loading = canRoot && states.size < targets.size
 
+        if (canRoot && targets.any { TargetFiles.failedRecently(it) && !TargetFiles.hasState(it) }) {
+            into.addView(ui.hint("部分目标应用状态读取失败，请检查 Root / Shizuku 授权。"))
+            into.addView(ui.actionCard("重试读取", "重新读取目标应用状态") {
+                targets.forEach { TargetFiles.invalidate(it) }
+                host.refresh()
+            })
+        }
+
         fun count(feature: String): Int =
             if (!canRoot) 0 else states.values.count { it.isOn(Features.MASTER) && it.isOn(feature) }
 
@@ -92,10 +100,15 @@ class FeaturesScreen(private val host: ScreenHost) {
         if (missing.isEmpty()) return cached
 
         val rendered = targets.map { TargetFiles.peek(it) }
+        // 刚失败过的先不再重复发命令，等用户点「重试读取」或 5 秒后再试
+        val toLoad = missing.filter { !TargetFiles.failedRecently(it) }
+        if (toLoad.isEmpty()) return cached
         Thread {
-            try {
-                TargetFiles.loadAll(missing, force = true)
-            } catch (_: Throwable) {
+            toLoad.forEach { pkg ->
+                try {
+                    TargetFiles.load(pkg, force = true)
+                } catch (_: Throwable) {
+                }
             }
             ui.activity.runOnUiThread {
                 if (ui.activity.isFinishing || ui.activity.isDestroyed) return@runOnUiThread

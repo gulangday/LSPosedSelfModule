@@ -26,8 +26,16 @@ class UpdateBlockScreen(
         val cached = if (canRoot) com.example.selfxposed.TargetFiles.peek(pkg) else null
         if (canRoot && cached == null) {
             into.addView(ui.backRow("‹  功能") { host.openFeatures() })
-            into.addView(ui.hint("正在读取目标应用状态…"))
-            com.example.selfxposed.TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            if (com.example.selfxposed.TargetFiles.failedRecently(pkg)) {
+                into.addView(ui.hint("读取目标应用状态失败，请检查 Root / Shizuku 授权。"))
+                into.addView(ui.actionCard("重试", "重新读取目标应用状态") {
+                    com.example.selfxposed.TargetFiles.invalidate(pkg)
+                    host.refresh()
+                })
+            } else {
+                into.addView(ui.hint("正在读取目标应用状态…"))
+                com.example.selfxposed.TargetFiles.loadAsync(ui.activity, pkg, force = true) { host.refresh() }
+            }
             return
         }
         val state = cached ?: com.example.selfxposed.TargetFiles.TargetState()
