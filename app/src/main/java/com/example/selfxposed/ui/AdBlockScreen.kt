@@ -40,7 +40,7 @@ class AdBlockScreen(
                 ).apply { setPadding(0, ui.dp(8), 0, 0) })
             })
             into.addView(ui.lockedCard("去广告", "开屏 / 摇一摇 / 广告落地页", tag = "模块未启用"))
-            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name, com.example.selfxposed.ConfigClient.F_AD) })
             return
         }
 
@@ -188,6 +188,6 @@ class AdBlockScreen(
             "限制：只能拦 Java 层广告。Unity / Flutter 自绘广告、native 层摇一摇拦不到；\n" +
                 "广告 SDK 混淆后类名变化也可能失效。"
         ))
-        into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+        into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name, com.example.selfxposed.ConfigClient.F_AD) })
     }
 }

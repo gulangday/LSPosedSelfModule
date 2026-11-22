@@ -43,7 +43,7 @@ class VersionSpoofScreen(
                 ).apply { setPadding(0, ui.dp(8), 0, 0) })
             })
             into.addView(ui.lockedCard("版本伪装", "填一个更高的版本号", tag = "模块未启用"))
-            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name, com.example.selfxposed.ConfigClient.F_UPDATE) })
             return
         }
 
@@ -119,6 +119,6 @@ class VersionSpoofScreen(
                 "如果更新提示是服务器下发（客户端上报版本、服务器决定），伪装可能无效，" +
                 "这时请用「拦截弹窗」按关键字把更新弹窗拦掉。"
         ))
-        into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+        into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name, com.example.selfxposed.ConfigClient.F_UPDATE) })
     }
 }

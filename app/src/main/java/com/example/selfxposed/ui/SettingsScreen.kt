@@ -4,6 +4,7 @@ import android.widget.LinearLayout
 import com.example.selfxposed.RootShell
 import com.example.selfxposed.ShizukuBridge
 import com.example.selfxposed.WorkMode
+import com.example.selfxposed.ConfigClient
 
 /** 设置页：只放入口，具体内容进去看。 */
 class SettingsScreen(private val host: ScreenHost) {
@@ -20,7 +21,7 @@ class SettingsScreen(private val host: ScreenHost) {
                 "· 或让 Shizuku 以 root 运行后，从这里直接切到 Root 模式"
         ))
         into.addView(ui.entryRow("权限", "后台常驻、自启动") { host.openPermissions() })
-        into.addView(ui.entryRow("实时日志", "查看目标应用的运行记录") { pickLogs() })
+        into.addView(ui.entryRow("模块日志", "查看本模块自身的运行记录") { host.openLogs(ConfigClient.MODULE_PACKAGE, "模块") })
         into.addView(ui.entryRow("关于", "版本、包名与项目地址") { host.openAbout() })
     }
 
@@ -40,6 +41,7 @@ class SettingsScreen(private val host: ScreenHost) {
                 else -> -1
             },
             onPick = { which ->
+                repo.logModule("设置工作模式：选择项=$which，当前=${WorkMode.label(WorkMode.get(ui.activity))}")
                 android.util.Log.i("SelfXposedRoot", "pickWorkMode which=$which current=${WorkMode.get(ui.activity)}")
                 when (which) {
                     0 -> {
@@ -52,6 +54,7 @@ class SettingsScreen(private val host: ScreenHost) {
                             ui.activity.runOnUiThread {
                                 if (granted) {
                                     WorkMode.set(ui.activity, WorkMode.ROOT)
+                                    repo.logModule("工作模式已切换为 Root")
                                     host.toast("已切换为 Root 模式")
                                     host.refresh()
                                 } else {
@@ -83,6 +86,7 @@ class SettingsScreen(private val host: ScreenHost) {
                         ui.activity.runOnUiThread {
                             if (ShizukuBridge.hasPermission()) {
                                 WorkMode.set(ui.activity, WorkMode.SHIZUKU)
+                                repo.logModule("工作模式已切换为 Shizuku")
                                 host.toast("已切换为 Shizuku 模式")
                             } else {
                                 host.toast("请先在 Shizuku 弹窗里允许")
@@ -97,6 +101,7 @@ class SettingsScreen(private val host: ScreenHost) {
                             "SelfXposedRoot",
                             "切换非 Root 后读取=${WorkMode.get(ui.activity)}"
                         )
+                        repo.logModule("工作模式已切换为非 Root")
                         host.toast("已切换为非 Root 模式")
                         host.refresh()
                     }
@@ -116,17 +121,5 @@ class SettingsScreen(private val host: ScreenHost) {
         }
     }
 
-    private fun pickLogs() {
-        val targets = repo.targets()
-        if (targets.isEmpty()) {
-            host.toast("当前没有目标应用")
-            return
-        }
-        val names = targets.map { repo.label(it) }
-        ui.listDialog(
-            title = "选择应用日志",
-            items = names,
-            onPick = { which -> host.openLogs(targets[which], names[which]) }
-        )
-    }
+
 }

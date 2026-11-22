@@ -25,3 +25,5 @@ local.properties
 Thumbs.db
 
 debug.log
+*.bak
+*.zip

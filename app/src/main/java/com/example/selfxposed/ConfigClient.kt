@@ -49,10 +49,6 @@ object ConfigClient {
 
     fun defaults(): JSONObject = JSONObject()
         .put("enabled", false)
-        .put("popupEnabled", false)
-        .put("popupText", "你好")
-        .put("showMs", 5000)
-        .put("fadeMs", 1000)
 
     /** 把存储的配置合并到默认值之上，保证旧配置缺少新字段时也有合理默认。 */
     fun merge(stored: JSONObject?): JSONObject {
@@ -89,9 +85,28 @@ object ConfigClient {
         call(resolver, M_SET_CONFIG, pkg, extras)
     }
 
+    /** 功能日志标签：写日志和按功能筛选都用这一套，避免两边写法不一致。 */
+    const val F_POPUP = "弹窗提醒"
+    const val F_BLOCK = "拦截弹窗"
+    const val F_UPDATE = "版本伪装"
+    const val F_AD = "去广告"
+    const val F_PURIFY = "净化"
+    const val F_TRANSLATE = "翻译"
+
     fun log(resolver: ContentResolver, pkg: String, message: String) {
+        logFeature(resolver, pkg, "", message)
+    }
+
+    /**
+     * 带功能标记的日志：写进去时加 `[功能名]` 前缀。
+     *
+     * 这样各功能的日志页只筛出自己的，设置里的日志页能看到全部（不加前缀的就显示原文）。
+     * 存储格式不变，仍然是每行一条，只是行首多了标记。
+     */
+    fun logFeature(resolver: ContentResolver, pkg: String, feature: String, message: String) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        val extras = Bundle().apply { putString(K_LINE, "$time  $message") }
+        val tag = if (feature.isBlank()) "" else "[$feature] "
+        val extras = Bundle().apply { putString(K_LINE, "$time  $tag$message") }
         call(resolver, M_APPEND_LOG, pkg, extras)
     }
 

@@ -47,7 +47,7 @@ class Ui(val activity: Activity) {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(16), dp(16), dp(16))
         this.background = rounded(background, 18)
-        elevation = dp(1).toFloat()
+        elevation = dp(2).toFloat()
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) }
     }
 
@@ -183,8 +183,8 @@ class Ui(val activity: Activity) {
                     downX = event.rawX
                     downY = event.rawY
                     v.animate().cancel()
-                    v.animate().scaleX(0.96f).scaleY(0.96f).alpha(0.8f)
-                        .setDuration(90).start()
+                    v.animate().scaleX(0.985f).scaleY(0.985f).alpha(0.92f)
+                        .setDuration(75).setInterpolator(DecelerateInterpolator()).start()
                     if (onLongClick != null) v.postDelayed(longPress, 500)
                     true
                 }
@@ -202,7 +202,7 @@ class Ui(val activity: Activity) {
                     v.removeCallbacks(longPress)
                     v.animate().cancel()
                     v.animate().scaleX(1f).scaleY(1f).alpha(1f)
-                        .setDuration(150).setInterpolator(DecelerateInterpolator())
+                        .setDuration(180).setInterpolator(DecelerateInterpolator())
                         .withEndAction { if (!longPressFired) onClick() }.start()
                     true
                 }
@@ -210,7 +210,7 @@ class Ui(val activity: Activity) {
                 MotionEvent.ACTION_CANCEL -> {
                     v.removeCallbacks(longPress)
                     v.animate().cancel()
-                    v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(150).start()
+                    v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(180).setInterpolator(DecelerateInterpolator()).start()
                     true
                 }
 
@@ -379,6 +379,41 @@ class Ui(val activity: Activity) {
         wrapper.addView(cardView, LinearLayout.LayoutParams(-1, -2))
         dialog.setContentView(wrapper)
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
+    }
+
+    /** 看图弹窗：点小图后放大显示，点空白处关闭。 */
+    fun imageDialog(title: String, image: android.graphics.Bitmap) {
+        val dialog = Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar)
+        val wrapper = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(20), dp(24), dp(20), dp(24))
+            setBackgroundColor(Color.argb(180, 0, 0, 0))
+            isClickable = true
+            setOnClickListener { dialog.dismiss() }
+        }
+        val cardView = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(14))
+            background = rounded(Palette.surface, 18)
+            elevation = dp(8).toFloat()
+            isClickable = true
+        }
+        cardView.addView(label(title, 15, Palette.ink, true))
+        cardView.addView(ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setImageBitmap(image)
+            adjustViewBounds = true
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        cardView.addView(label("点一下关闭", 11, Palette.muted, false).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
+        })
+        wrapper.addView(cardView, LinearLayout.LayoutParams(-1, -2))
+        dialog.setContentView(wrapper)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.setCanceledOnTouchOutside(true)
         dialog.show()
     }
 

@@ -16,7 +16,6 @@ import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import com.example.selfxposed.data.ModuleRepository
 import com.example.selfxposed.ui.AboutScreen
-import com.example.selfxposed.ui.AppSettingsScreen
 import com.example.selfxposed.ui.FeaturesScreen
 import com.example.selfxposed.ui.HelpScreen
 import com.example.selfxposed.ui.HomeScreen
@@ -33,6 +32,9 @@ import com.example.selfxposed.ui.HintStyleScreen
 import com.example.selfxposed.ui.KeywordScreen
 import com.example.selfxposed.ui.VersionSpoofScreen
 import com.example.selfxposed.ui.AdBlockScreen
+import com.example.selfxposed.ui.PurifyRuleScreen
+import com.example.selfxposed.ui.PurifyScreen
+import com.example.selfxposed.ui.TranslateScreen
 
 /**
  * 只负责外壳与导航：顶部标题、内容容器、底部两个导航项、系统返回键。
@@ -62,12 +64,29 @@ class MainActivity : Activity(), ScreenHost {
     private var previousPage = PAGE_HOME
     private var selectedPackage = ""
     private var selectedName = ""
+    /** 正在查看的净化规则 ID（规则详情页用）。 */
+    private var selectedRuleId = ""
     private var logsPackage = ""
     private var logsName = ""
     private var logsBackPage = PAGE_SETTINGS
 
+    /** 日志页只看哪个功能；null = 看该范围内全部日志。 */
+    private var logsFeature: String? = null
+
     /** 弹窗规则页的来源页，返回时回到它。 */
     private var rulesBackPage = PAGE_FEATURES
+
+    /** 净化规则导出：等用户选完保存位置后要写入的内容。 */
+    private var pendingExportContent = ""
+
+    /** 净化规则导入：等用户选完文件后要合并进哪个应用。 */
+    private var pendingImportPackage = ""
+
+    /** 翻译词条导出：等用户选完保存位置后要写入的内容。 */
+    private var pendingDictExportContent = ""
+
+    /** 翻译词条导入：等用户选完文件后要合并进哪个应用。 */
+    private var pendingDictImportPackage = ""
 
     private var systemBackCallback: OnBackInvokedCallback? = null
 
@@ -119,7 +138,6 @@ class MainActivity : Activity(), ScreenHost {
         // 打开模块时确保常驻服务在运行（开机后也由 BootReceiver 负责拉起）。
         if (KeepAlive.isEnabled(this)) KeepAliveService.start(this)
         PrefsPermission.makeWorldReadable(this)
-        if (intent?.getBooleanExtra(EXTRA_PREVIEW_POPUP, false) == true) showDebugPreview()
 
         // 首次启动必须先选工作模式，否则进不来。
         if (WorkMode.get(this) == null) askWorkMode()
@@ -172,8 +190,8 @@ class MainActivity : Activity(), ScreenHost {
                 .alpha(1f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setDuration(320)
-                .setInterpolator(DecelerateInterpolator())
+                .setDuration(280)
+                .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f))
                 .start()
         } catch (_: Throwable) {
         }
@@ -228,6 +246,11 @@ class MainActivity : Activity(), ScreenHost {
         // 权限页：从系统设置授权回来时刷新一次，让通知权限状态及时更新
         if (::content.isInitialized && currentPage == PAGE_PERMISSIONS) {
             renderPage(PAGE_PERMISSIONS, animate = false)
+        }
+        // 净化页：从目标应用点选完返回时，丢掉缓存并重渲染，保留当前滚动位置
+        if (::content.isInitialized && currentPage == PAGE_PURIFY && selectedPackage.isNotBlank()) {
+            TargetFiles.invalidate(selectedPackage)
+            refresh()
         }
         // 回到主页时刷新一次，让 Hook 连接状态反映最新的握手记录。
         if (::content.isInitialized && currentPage == PAGE_HOME) {
@@ -431,20 +454,6 @@ class MainActivity : Activity(), ScreenHost {
         }
     }
 
-    /**
-     * 调试入口，方便在没有 LSPosed 注入的情况下验证弹窗渲染：
-     * adb shell am start -n com.example.selfxposed/.MainActivity \
-     *   --ez preview_popup true --es preview_text "hello" --ei preview_show_ms 5000
-     */
-    private fun showDebugPreview() {
-        val text = intent?.getStringExtra(EXTRA_PREVIEW_TEXT) ?: "弹窗预览：白底黑字 · 底部居中"
-        val showMs = intent?.getIntExtra(EXTRA_PREVIEW_SHOW_MS, 5000) ?: 5000
-        val fadeMs = intent?.getIntExtra(EXTRA_PREVIEW_FADE_MS, 1000) ?: 1000
-        window.decorView.postDelayed({
-            PopupController.show(this, "debug-preview", text, showMs, fadeMs, restart = true)
-        }, 500)
-    }
-
     private fun navItem(title: String) = ui.label(title, 14, Palette.muted, true).apply {
         gravity = Gravity.CENTER
         background = ui.rounded(Color.TRANSPARENT, 24)
@@ -453,8 +462,8 @@ class MainActivity : Activity(), ScreenHost {
     private fun updateNav(page: String, animate: Boolean) {
         val group = when (page) {
             PAGE_FEATURES, PAGE_UPDATE_BLOCK, PAGE_DIALOG_RULES, PAGE_HINT_STYLE, PAGE_KEYWORDS,
-            PAGE_VERSION_SPOOF, PAGE_AD_BLOCK -> 1
-            PAGE_SETTINGS, PAGE_PERMISSIONS, PAGE_ABOUT -> 2
+            PAGE_VERSION_SPOOF, PAGE_AD_BLOCK, PAGE_PURIFY, PAGE_PURIFY_RULE, PAGE_TRANSLATE -> 1
+            PAGE_SETTINGS, PAGE_PERMISSIONS, PAGE_ABOUT, PAGE_LOGS -> 2
             else -> 0
         }
 
@@ -468,7 +477,7 @@ class MainActivity : Activity(), ScreenHost {
                 item.scaleX = 0.97f
                 item.scaleY = 0.97f
                 item.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                    .setDuration(480).setInterpolator(DecelerateInterpolator()).start()
+                    .setDuration(220).setInterpolator(android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)).start()
             } else {
                 item.alpha = 1f
                 item.scaleX = 1f
@@ -493,10 +502,10 @@ class MainActivity : Activity(), ScreenHost {
 
         content.animate().cancel()
         if (animate) {
-            content.translationX = ui.dp(30) * direction
-            content.alpha = 0.65f
-            content.animate().translationX(0f).alpha(1f).setDuration(480)
-                .setInterpolator(DecelerateInterpolator()).start()
+            content.translationX = ui.dp(22) * direction
+            content.alpha = 0.72f
+            content.animate().translationX(0f).alpha(1f).setDuration(280)
+                .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)).start()
         } else {
             content.translationX = 0f
             content.alpha = 1f
@@ -512,11 +521,15 @@ class MainActivity : Activity(), ScreenHost {
             PAGE_KEYWORDS -> KeywordScreen(this, selectedPackage, selectedName).render(content)
             PAGE_VERSION_SPOOF -> VersionSpoofScreen(this, selectedPackage, selectedName).render(content)
             PAGE_AD_BLOCK -> AdBlockScreen(this, selectedPackage, selectedName).render(content)
+            PAGE_PURIFY -> PurifyScreen(this, selectedPackage, selectedName).render(content)
+            PAGE_PURIFY_RULE -> PurifyRuleScreen(
+                this, selectedPackage, selectedName, selectedRuleId
+            ).render(content)
+            PAGE_TRANSLATE -> TranslateScreen(this, selectedPackage, selectedName).render(content)
             PAGE_SETTINGS -> SettingsScreen(this).render(content)
             PAGE_PERMISSIONS -> PermissionsScreen(this).render(content)
             PAGE_ABOUT -> AboutScreen(this).render(content)
-            PAGE_APP -> AppSettingsScreen(this, selectedPackage, selectedName).render(content)
-            PAGE_LOGS -> LogsScreen(this, logsPackage, logsName).render(content)
+            PAGE_LOGS -> LogsScreen(this, logsPackage, logsName, logsFeature).render(content)
             PAGE_HELP -> HelpScreen(this).render(content)
             PAGE_PICKER -> PickerScreen(this).render(content)
         }
@@ -537,12 +550,6 @@ class MainActivity : Activity(), ScreenHost {
     override fun openPermissions() = renderPage(PAGE_PERMISSIONS, animate = true)
 
     override fun openAbout() = renderPage(PAGE_ABOUT, animate = true)
-
-    override fun openApp(pkg: String, name: String) {
-        selectedPackage = pkg
-        selectedName = name
-        renderPage(PAGE_APP, animate = true)
-    }
 
     override fun openDialogRules(pkg: String?, name: String?) {
         selectedPackage = pkg.orEmpty()
@@ -580,15 +587,202 @@ class MainActivity : Activity(), ScreenHost {
         renderPage(PAGE_AD_BLOCK, animate = true)
     }
 
+    override fun openPurify(pkg: String, name: String) {
+        selectedPackage = pkg
+        selectedName = name
+        renderPage(PAGE_PURIFY, animate = true)
+    }
+
+    override fun openPurifyRule(pkg: String, name: String, ruleId: String) {
+        selectedPackage = pkg
+        selectedName = name
+        selectedRuleId = ruleId
+        renderPage(PAGE_PURIFY_RULE, animate = true)
+    }
+
+    /** 导出净化规则：用系统的"新建文件"选择器，不需要任何存储权限。 */
+    override fun exportPurifyRules(pkg: String, name: String, content: String) {
+        pendingExportContent = content
+        try {
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TITLE, "purify-$pkg.txt")
+            }
+            startActivityForResult(intent, REQ_EXPORT)
+        } catch (_: Throwable) {
+            toast("没有可用的文件选择器")
+        }
+    }
+
+    /** 导入净化规则：读文本 → 按 id 去重后追加 → 后台写回目标应用。 */
+    override fun importPurifyRules(pkg: String, name: String) {
+        pendingImportPackage = pkg
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/plain"
+            }
+            startActivityForResult(intent, REQ_IMPORT)
+        } catch (_: Throwable) {
+            toast("没有可用的文件选择器")
+        }
+    }
+
+    override fun openTranslate(pkg: String, name: String) {
+        selectedPackage = pkg
+        selectedName = name
+        renderPage(PAGE_TRANSLATE, animate = true)
+    }
+
+    /** 导出翻译词条：用系统的"新建文件"选择器，不需要存储权限。 */
+    override fun exportTranslateDict(pkg: String, name: String, content: String) {
+        pendingDictExportContent = content
+        try {
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TITLE, "translate-$pkg.txt")
+            }
+            startActivityForResult(intent, REQ_DICT_EXPORT)
+        } catch (_: Throwable) {
+            toast("没有可用的文件选择器")
+        }
+    }
+
+    /** 导入翻译词条：读文本 → 同名覆盖 → 后台写回目标应用。 */
+    override fun importTranslateDict(pkg: String, name: String) {
+        pendingDictImportPackage = pkg
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/plain"
+            }
+            startActivityForResult(intent, REQ_DICT_IMPORT)
+        } catch (_: Throwable) {
+            toast("没有可用的文件选择器")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            REQ_DICT_EXPORT -> {
+                val text = pendingDictExportContent
+                pendingDictExportContent = ""
+                if (text.isEmpty()) return
+                Thread {
+                    val ok = try {
+                        contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+                        true
+                    } catch (_: Throwable) {
+                        false
+                    }
+                    runOnUiThread { toast(if (ok) "词条已导出" else "导出失败") }
+                }.start()
+            }
+
+            REQ_DICT_IMPORT -> {
+                val pkg = pendingDictImportPackage
+                pendingDictImportPackage = ""
+                if (pkg.isEmpty()) return
+                toast("正在读取词条…")
+                Thread {
+                    val imported = try {
+                        contentResolver.openInputStream(uri)?.use {
+                            TranslateDict.parse(it.readBytes().toString(Charsets.UTF_8))
+                        }.orEmpty()
+                    } catch (_: Throwable) {
+                        emptyMap()
+                    }
+                    if (imported.isEmpty()) {
+                        runOnUiThread { toast("文件里没有可用的词条") }
+                        return@Thread
+                    }
+                    // 同名以文件里的为准；其余已有词条保留
+                    val merged = TranslateDict.readRemoteUser(pkg).toMutableMap()
+                    merged.putAll(imported)
+                    val ok = TranslateDict.writeRemoteUser(pkg, merged)
+                    TargetFiles.invalidate(pkg)
+                    runOnUiThread {
+                        toast(
+                            if (ok) "已导入 ${imported.size} 条词条，重启目标应用生效"
+                            else "导入失败，检查 Root / Shizuku 授权"
+                        )
+                        if (ok && currentPage == PAGE_TRANSLATE) refresh()
+                    }
+                }.start()
+            }
+
+            REQ_EXPORT -> {
+                val text = pendingExportContent
+                pendingExportContent = ""
+                if (text.isEmpty()) return
+                Thread {
+                    val ok = try {
+                        contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+                        true
+                    } catch (_: Throwable) {
+                        false
+                    }
+                    runOnUiThread { toast(if (ok) "规则已导出" else "导出失败") }
+                }.start()
+            }
+
+            REQ_IMPORT -> {
+                val pkg = pendingImportPackage
+                pendingImportPackage = ""
+                if (pkg.isEmpty()) return
+                toast("正在读取规则…")
+                Thread {
+                    val imported = try {
+                        contentResolver.openInputStream(uri)?.use {
+                            PurifyRules.parse(it.readBytes().toString(Charsets.UTF_8))
+                        }.orEmpty()
+                    } catch (_: Throwable) {
+                        emptyList()
+                    }
+                    if (imported.isEmpty()) {
+                        runOnUiThread { toast("文件里没有可用的规则") }
+                        return@Thread
+                    }
+                    // 按 id 去重：已经在用的规则不重复添加
+                    val merged = PurifyRules.readRemote(pkg).toMutableList()
+                    val knownIds = merged.map { it.id }.toMutableSet()
+                    var added = 0
+                    imported.forEach { rule ->
+                        if (knownIds.add(rule.id)) {
+                            merged.add(rule.copy(hits = 0))
+                            added++
+                        }
+                    }
+                    val ok = added > 0 && PurifyRules.writeRemote(pkg, merged)
+                    TargetFiles.invalidate(pkg)
+                    runOnUiThread {
+                        toast(
+                            if (ok) "已导入 $added 条规则，重启目标应用生效"
+                            else "导入失败，检查 Root / Shizuku 授权"
+                        )
+                        if (ok && currentPage == PAGE_PURIFY) refresh()
+                    }
+                }.start()
+            }
+        }
+    }
+
     override fun openUpdateBlock(pkg: String, name: String) {
         selectedPackage = pkg
         selectedName = name
         renderPage(PAGE_UPDATE_BLOCK, animate = true)
     }
 
-    override fun openLogs(pkg: String, name: String) {
+    override fun openLogs(pkg: String, name: String, feature: String?) {
         logsPackage = pkg
         logsName = name
+        logsFeature = feature
         // 记住从哪进来的，返回时回原页面
         logsBackPage = currentPage
         renderPage(PAGE_LOGS, animate = true)
@@ -741,20 +935,26 @@ class MainActivity : Activity(), ScreenHost {
         private const val PAGE_KEYWORDS = "keywords"
         private const val PAGE_VERSION_SPOOF = "version_spoof"
         private const val PAGE_AD_BLOCK = "ad_block"
+        private const val PAGE_PURIFY = "purify"
+        private const val PAGE_PURIFY_RULE = "purify_rule"
+        private const val PAGE_TRANSLATE = "translate"
         private const val PAGE_SETTINGS = "settings"
         private const val PAGE_PERMISSIONS = "permissions"
         private const val PAGE_ABOUT = "about"
-        private const val PAGE_APP = "app"
         private const val PAGE_LOGS = "logs"
         private const val PAGE_HELP = "help"
         private const val PAGE_PICKER = "picker"
-        private val HOME_PAGES = setOf(PAGE_HOME, PAGE_APP, PAGE_LOGS, PAGE_HELP, PAGE_PICKER)
+        private val HOME_PAGES = setOf(PAGE_HOME, PAGE_LOGS, PAGE_HELP, PAGE_PICKER)
 
-        private const val EXTRA_PREVIEW_POPUP = "preview_popup"
-        private const val EXTRA_PREVIEW_TEXT = "preview_text"
-        private const val EXTRA_PREVIEW_SHOW_MS = "preview_show_ms"
-        private const val EXTRA_PREVIEW_FADE_MS = "preview_fade_ms"
         private const val EXTRA_KEEP_ALIVE = "keep_alive"
         private const val EXTRA_PAGE = "page"
+
+        /** 净化规则导入导出的请求码。 */
+        private const val REQ_EXPORT = 1001
+        private const val REQ_IMPORT = 1002
+
+        /** 翻译词条导入导出的请求码。 */
+        private const val REQ_DICT_EXPORT = 1003
+        private const val REQ_DICT_IMPORT = 1004
     }
 }

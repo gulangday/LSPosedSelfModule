@@ -20,41 +20,44 @@ class PermissionsScreen(private val host: ScreenHost) {
 
         addRootCard(into)
 
-        // ---- 后台常驻：状态跟随「通知权限」，有权限即常驻；点击卡片跳系统电池设置 ----
-        val notifyAllowed = hasNotificationPermission()
-        // 自动对齐：有权限 → 打开常驻；权限被撤销 → 关闭常驻
-        if (notifyAllowed && !KeepAlive.isEnabled(ui.activity)) {
-            KeepAlive.setEnabled(ui.activity, true)
-            KeepAliveService.start(ui.activity)
-        } else if (!notifyAllowed && KeepAlive.isEnabled(ui.activity)) {
-            KeepAlive.setEnabled(ui.activity, false)
-            KeepAliveService.stop(ui.activity)
-        }
+        // ---- 后台常驻：状态只由用户开关控制，不再错误地跟随通知权限自动开启 ----
+        var keepEnabled = KeepAlive.isEnabled(ui.activity)
         val keepChip = ui.chip(
-            if (notifyAllowed) "已开启" else "未开启",
-            if (notifyAllowed) Palette.success else Palette.muted,
-            if (notifyAllowed) Palette.successSoft else Palette.surfaceMuted
-        ).apply {
-            isClickable = false
-        }
-        into.addView(ui.card().apply {
+            if (keepEnabled) "已开启" else "未开启",
+            if (keepEnabled) Palette.success else Palette.muted,
+            if (keepEnabled) Palette.successSoft else Palette.surfaceMuted
+        ).apply { isClickable = false }
+        val keepDescription = ui.label(
+            if (keepEnabled) "已启用：模块会尝试通过前台服务保持后台运行" else "未启用：模块不会主动启动常驻服务",
+            11, Palette.muted, false
+        ).apply { setPadding(0, ui.dp(4), 0, 0) }
+        val keepCard = ui.card().apply {
             addView(rowWith("后台常驻", keepChip))
+            addView(keepDescription)
             addView(ui.label(
-                if (notifyAllowed) {
-                    "已开启：服务已启动（保持一条常驻通知）"
-                } else {
-                    "未开启：点这里授予通知权限后会自动常驻"
-                },
-                11, Palette.muted, false
-            ).apply { setPadding(0, ui.dp(4), 0, 0) })
-            addView(ui.label(
-                "系统限制未关闭：点卡片去电池设置里选择「无限制」，否则系统可能杀掉进程",
+                "系统电池限制仍可能回收进程，可通过电池设置调整。",
                 11, Palette.warning, false
             ).apply { setPadding(0, ui.dp(4), 0, 0) })
-            ui.pressable(this, {
-                if (!hasNotificationPermission()) openNotificationSettings() else openBatterySettings()
-            })
+        }
+        // 仅状态按钮响应点击，卡片标题和说明区域不触发开关。
+        ui.pressable(keepChip, {
+            if (!keepEnabled && !hasNotificationPermission()) {
+                host.toast("请先允许通知权限，再开启后台常驻")
+                openNotificationSettings()
+                return@pressable
+            }
+            val next = !keepEnabled
+            KeepAlive.setEnabled(ui.activity, next)
+            if (next) KeepAliveService.start(ui.activity) else KeepAliveService.stop(ui.activity)
+            keepEnabled = next
+            keepChip.text = if (next) "已开启" else "未开启"
+            keepChip.setTextColor(if (next) Palette.success else Palette.muted)
+            keepChip.background = ui.rounded(if (next) Palette.successSoft else Palette.surfaceMuted, 10)
+            keepDescription.text = if (next) "已启用：模块会尝试通过前台服务保持后台运行" else "未启用：模块不会主动启动常驻服务"
+            repoLog("后台常驻已${if (next) "开启" else "关闭"}")
+            host.toast(if (next) "后台常驻已开启" else "后台常驻已关闭")
         })
+        into.addView(keepCard)
 
         // ---- 自启动（建议开启，非必需）----
         into.addView(ui.card().apply {
@@ -65,11 +68,13 @@ class PermissionsScreen(private val host: ScreenHost) {
             addView(ui.label(
                 "· 拦截规则存在目标应用本地，不开启也能正常拦截\n" +
                     "· 只有模块被系统杀掉后、目标应用要读模块配置（如弹窗文字）时，\n" +
-                    "  才需要系统能把模块重新拉起来\n" +
-                    "· 点这里去系统设置里允许自启动",
+                    "  才需要系统能把模块重新拉起来",
                 11, Palette.muted, false
             ).apply { setPadding(0, ui.dp(6), 0, 0) })
-            ui.pressable(this, { openAutoStart() })
+            addView(ui.label("点击此处直接打开系统自启动设置 →", 11, 0xFFFFB300.toInt(), true).apply {
+                setPadding(0, ui.dp(8), 0, 0)
+                ui.pressable(this, { openAutoStart() })
+            })
         })
     }
 
@@ -86,11 +91,10 @@ class PermissionsScreen(private val host: ScreenHost) {
         val card = ui.card().apply {
             addView(rowWith("Root 授权", chip))
             addView(ui.label(
-                "点击卡片请求 root 权限，系统会弹出授权窗（需要 Root 模式）；" +
-                    "Shizuku / 非 Root 模式不需要这一步",
+                "仅点击右侧按钮请求 root 权限；Shizuku / 非 Root 模式不需要这一步",
                 11, Palette.muted, false
             ).apply { setPadding(0, ui.dp(4), 0, 0) })
-            ui.pressable(this, {
+            ui.pressable(chip, {
                 host.toast("正在请求 root，请在弹窗里选择允许")
                 Thread {
                     val ok = try {
@@ -117,6 +121,11 @@ class PermissionsScreen(private val host: ScreenHost) {
             }
             ui.activity.runOnUiThread { applyState(ok) }
         }.start()
+    }
+
+
+    private fun repoLog(message: String) {
+        host.repo.logModule(message)
     }
 
     private fun hasNotificationPermission(): Boolean {
@@ -164,42 +173,44 @@ class PermissionsScreen(private val host: ScreenHost) {
             addView(chip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(2) })
         }
 
-    /** MIUI / ColorOS 的自启动页没有公开 action，只能按常见组件名尝试，失败退回应用详情页。 */
+    /** MIUI / ColorOS 等系统的自启动管理页没有统一公开入口。 */
     private fun openAutoStart() {
-        val candidates = listOf(
-            android.content.ComponentName(
-                "com.miui.securitycenter",
-                "com.miui.permcenter.autostart.AutoStartManagementActivity"
-            ),
-            android.content.ComponentName(
-                "com.miui.securitycenter",
-                "com.miui.permcenter.AutoStartManagementActivity"
-            ),
-            android.content.ComponentName(
-                "com.oplus.safecenter",
-                "com.oplus.safecenter.permission.startup.StartupAppListActivity"
-            ),
-            android.content.ComponentName(
-                "com.coloros.safecenter",
-                "com.coloros.safecenter.startupapp.StartupAppListActivity"
-            )
+        val manufacturer = Build.MANUFACTURER.lowercase(java.util.Locale.ROOT)
+        val miui = listOf(
+            "com.miui.securitycenter/com.miui.permcenter.autostart.AutoStartManagementActivity",
+            "com.miui.securitycenter/com.miui.permcenter.AutoStartManagementActivity"
         )
-        for (component in candidates) {
-            try {
-                ui.activity.startActivity(android.content.Intent().setComponent(component))
-                return
-            } catch (_: Throwable) {
-            }
+        val oppo = listOf(
+            "com.coloros.safecenter/com.coloros.safecenter.startupapp.StartupAppListActivity",
+            "com.oplus.safecenter/com.oplus.safecenter.permission.startup.StartupAppListActivity"
+        )
+        val samsung = listOf(
+            "com.samsung.android.lool/com.samsung.android.sm.ui.battery.BatteryActivity"
+        )
+        val candidates = when {
+            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") -> miui + oppo
+            manufacturer.contains("oppo") || manufacturer.contains("realme") || manufacturer.contains("oneplus") -> oppo + miui
+            manufacturer.contains("samsung") -> samsung + miui + oppo
+            else -> miui + oppo + samsung
         }
+        for (flattened in candidates) {
+            try {
+                val component = android.content.ComponentName.unflattenFromString(flattened) ?: continue
+                val intent = Intent().setComponent(component)
+                if (intent.resolveActivity(ui.activity.packageManager) != null) {
+                    ui.activity.startActivity(intent)
+                    return
+                }
+            } catch (_: Throwable) { }
+        }
+        // Android 没有统一的自启动设置入口；通用设备退回应用详情页。
         try {
             ui.activity.startActivity(
-                android.content.Intent(
-                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    android.net.Uri.parse("package:${ui.activity.packageName}")
-                )
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:${ui.activity.packageName}"))
             )
         } catch (_: Throwable) {
-            host.toast("无法打开系统设置，请手动允许自启动")
+            host.toast("无法打开系统自启动设置，请在系统设置中手动允许")
         }
     }
 }

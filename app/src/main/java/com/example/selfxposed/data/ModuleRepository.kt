@@ -41,6 +41,15 @@ class ModuleRepository(private val activity: Activity) {
         ""
     }
 
+    /** 模块自身的运行日志，与各目标应用的 Hook 日志分开存储。 */
+    fun logModule(message: String) {
+        try { ConfigClient.log(resolver, ConfigClient.MODULE_PACKAGE, message) } catch (_: Throwable) {}
+    }
+
+    fun moduleLogs(): String = logs(ConfigClient.MODULE_PACKAGE)
+
+    fun clearModuleLogs() = clearLogs(ConfigClient.MODULE_PACKAGE)
+
     fun clearLogs(pkg: String) {
         try {
             ConfigClient.clearLogs(resolver, pkg)

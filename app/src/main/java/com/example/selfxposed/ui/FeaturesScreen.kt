@@ -18,14 +18,6 @@ class FeaturesScreen(private val host: ScreenHost) {
         val canRoot = WorkMode.canUseRoot(ui.activity)
 
         into.addView(featureCard(
-            title = "弹窗",
-            subtitle = "底部提示：文字内容、显示时长与淡出时长",
-            status = statusText(Features.POPUP, targets, canRoot),
-            statusColor = statusColor(Features.POPUP, targets, canRoot),
-            statusBackground = statusBackground(Features.POPUP, targets, canRoot)
-        ) { pickTarget(Features.POPUP) { pkg, name -> host.openApp(pkg, name) } })
-
-        into.addView(featureCard(
             title = "拦截弹窗",
             subtitle = "按关键字或已学规则拦掉烦人的弹窗（更新提示等）",
             status = statusText(Features.BLOCK, targets, canRoot),
@@ -49,13 +41,27 @@ class FeaturesScreen(private val host: ScreenHost) {
             statusBackground = statusBackground(Features.AD, targets, canRoot)
         ) { pickTarget(Features.AD) { pkg, name -> host.openAdBlock(pkg, name) } })
 
+        into.addView(featureCard(
+            title = "净化",
+            subtitle = "点选隐藏 / 改写界面上的广告位、横幅、牛皮癣按钮",
+            status = statusText(Features.PURIFY, targets, canRoot),
+            statusColor = statusColor(Features.PURIFY, targets, canRoot),
+            statusBackground = statusBackground(Features.PURIFY, targets, canRoot)
+        ) { pickTarget(Features.PURIFY) { pkg, name -> host.openPurify(pkg, name) } })
+
+        into.addView(featureCard(
+            title = "翻译",
+            subtitle = "把界面上的英文按钮、菜单、提示换成中文（纯离线，不联网）",
+            status = statusText(Features.TRANSLATE, targets, canRoot),
+            statusColor = statusColor(Features.TRANSLATE, targets, canRoot),
+            statusBackground = statusBackground(Features.TRANSLATE, targets, canRoot)
+        ) { pickTarget(Features.TRANSLATE) { pkg, name -> host.openTranslate(pkg, name) } })
+
         // 启动早期 Shizuku 可能还没绑定好，读到空状态会显示"未启用"；
         // 后台补读一次，只有和当前显示不一致时才刷新（避免无限刷新）。
         if (canRoot && targets.isNotEmpty()) {
-            val renderedPopup = enabledCount(Features.POPUP, targets, canRoot)
             val renderedBlock = enabledCount(Features.BLOCK, targets, canRoot)
             Thread {
-                var freshPopup = 0
                 var freshBlock = 0
                 targets.forEach { pkg ->
                     val state = try {
@@ -64,11 +70,10 @@ class FeaturesScreen(private val host: ScreenHost) {
                         null
                     } ?: return@forEach
                     if (state.isOn(Features.MASTER)) {
-                        if (state.isOn(Features.POPUP)) freshPopup++
                         if (state.isOn(Features.BLOCK)) freshBlock++
                     }
                 }
-                if (freshPopup != renderedPopup || freshBlock != renderedBlock) {
+                if (freshBlock != renderedBlock) {
                     ui.activity.runOnUiThread { host.refresh() }
                 }
             }.start()

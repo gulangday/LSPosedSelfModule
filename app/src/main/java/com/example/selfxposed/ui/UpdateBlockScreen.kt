@@ -52,7 +52,7 @@ class UpdateBlockScreen(
             ).forEach { (title, subtitle) ->
                 into.addView(ui.lockedCard(title, subtitle, tag = "模块未启用"))
             }
-            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name, com.example.selfxposed.ConfigClient.F_BLOCK) })
             return
         }
 
@@ -117,7 +117,7 @@ class UpdateBlockScreen(
                 into.addView(ui.lockedCard(title, subtitle, tag = tag))
             }
             if (!canRoot) into.addView(ui.label(reason, 11, Palette.muted, false))
-            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+            into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name, com.example.selfxposed.ConfigClient.F_BLOCK) })
             return
         }
 
@@ -284,7 +284,7 @@ class UpdateBlockScreen(
             into.addView(ui.lockedCard("查看 / 清除规则（需要 Root / Shizuku）", "该应用当前学到的拦截规则"))
         }
 
-        into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name) })
+        into.addView(ui.actionCard("查看日志", "运行记录与错误信息") { host.openLogs(pkg, name, com.example.selfxposed.ConfigClient.F_BLOCK) })
     }
 
     companion object {

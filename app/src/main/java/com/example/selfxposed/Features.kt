@@ -16,13 +16,16 @@ object Features {
     /** 该目标应用的模块总开关：关闭时所有功能都不工作。 */
     const val MASTER = "master"
 
-    const val POPUP = "popup"
     const val BLOCK = "block"
     const val TOAST = "toast"
     /** 版本伪装（拦截强制更新） */
     const val UPDATE = "update"
     /** 去广告（开屏 / 摇一摇 / 弹窗 / 局部） */
     const val AD = "ad"
+    /** 净化：点选隐藏 / 改写界面上的广告位、横幅、牛皮癣按钮 */
+    const val PURIFY = "purify"
+    /** 翻译：按内置词库把英文界面换成中文（纯离线，不联网） */
+    const val TRANSLATE = "translate"
     /** 去广告调试：把目标应用的 DNS 请求域名写进日志，方便找广告域名 */
     const val AD_LOG = "adLog"
 

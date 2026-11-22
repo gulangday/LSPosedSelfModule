@@ -20,7 +20,13 @@ object TargetFiles {
         /** 去广告：用户自定义的 SDK 前缀（空 = 用内置默认） */
         val adSdkLines: List<String> = emptyList(),
         /** 去广告：用户自定义的广告域名（空 = 用内置默认） */
-        val adUrlLines: List<String> = emptyList()
+        val adUrlLines: List<String> = emptyList(),
+        /** 净化规则（已合并 hook 记下的命中数） */
+        val purifyRules: List<PurifyRules.Rule> = emptyList(),
+        /** 翻译：用户自己加的词条（英文小写=中文） */
+        val translateUser: Map<String, String> = emptyMap(),
+        /** 翻译选项：带危险符号的字符串是否跳过（默认 true） */
+        val translateSkipSymbols: Boolean = true
     ) {
         fun isOn(feature: String): Boolean = features[feature] == true
     }
@@ -60,6 +66,11 @@ object TargetFiles {
                 append("echo '@@U'; cat \$D/files/selfxposed_update_block.conf 2>/dev/null; echo; ")
                 append("echo '@@A'; cat \$D/files/selfxposed_ad_sdk.conf 2>/dev/null; echo; ")
                 append("echo '@@W'; cat \$D/files/selfxposed_ad_urls.conf 2>/dev/null; echo; ")
+                append("echo '@@P'; cat \$D/files/selfxposed_purify.conf 2>/dev/null; echo; ")
+                append("echo '@@Y'; cat \$D/files/selfxposed_purify_hits.conf 2>/dev/null; echo; ")
+                append("echo '@@K'; cat \$D/files/selfxposed_purify_skipped.conf 2>/dev/null; echo; ")
+                append("echo '@@T'; cat \$D/files/selfxposed_translate_user.conf 2>/dev/null; echo; ")
+                append("echo '@@S'; cat \$D/files/selfxposed_translate.conf 2>/dev/null; echo; ")
                 append("echo '@@R'; cat \$D/shared_prefs/selfxposed_block.xml 2>/dev/null; echo")
             }
             val raw = RootShell.exec(command, 6_000L)
@@ -85,6 +96,11 @@ object TargetFiles {
                 line == "@@U" -> current = "U"
                 line == "@@A" -> current = "A"
                 line == "@@W" -> current = "W"
+                line == "@@P" -> current = "P"
+                line == "@@Y" -> current = "Y"
+                line == "@@K" -> current = "K"
+                line == "@@T" -> current = "T"
+                line == "@@S" -> current = "S"
                 line == "@@R" -> current = "R"
                 else -> sections.getOrPut(current) { StringBuilder() }.append(line).append('\n')
             }
@@ -131,6 +147,17 @@ object TargetFiles {
             ?.let { block -> Regex("<string>(.*?)</string>").findAll(block).map { it.groupValues[1] }.toList() }
             .orEmpty()
 
-        return TargetState(features, pickMode, ballOff, ruleMode, ruleTitles, fakeName, fakeCode, adSdkLines, adUrlLines)
+        val purifyRules = PurifyRules.parse(
+            sections["P"]?.toString().orEmpty(),
+            PurifyRules.parseHits(sections["Y"]?.toString().orEmpty()),
+            PurifyRules.parseSkipped(sections["K"]?.toString().orEmpty())
+        )
+
+        return TargetState(
+            features, pickMode, ballOff, ruleMode, ruleTitles, fakeName, fakeCode, adSdkLines, adUrlLines,
+            purifyRules = purifyRules,
+            translateUser = TranslateDict.parse(sections["T"]?.toString().orEmpty()),
+            translateSkipSymbols = TranslateDict.parseOptions(sections["S"]?.toString().orEmpty())
+        )
     }
 }
